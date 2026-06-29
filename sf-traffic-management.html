@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>sf-traffic-management — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html" class="active">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+
+      <p class="eyebrow">Shared flow</p>
+      <h1>sf-traffic-management</h1>
+
+      <div class="answer">
+        <p><code>sf-traffic-management</code> is the post-identity traffic gate. It runs two
+        pure policies in a fixed order with no conditions: a per-client <strong>SpikeArrest</strong>
+        (<code>SA-PerClient</code>, <code>10ps</code>) that smooths instantaneous bursts, then a
+        <strong>distributed, synchronous hourly Quota</strong> (<code>Q-ByClient</code>,
+        <code>1000</code> per rolling hour) that enforces a hard consumption ceiling shared across
+        every message processor in the region. Both are <em>designed</em> to key on the OAuth
+        <code>client_id</code> from the validated token — which is why this flow must run
+        <strong>after</strong> token validation — but as shipped both key on
+        <code>client.ip</code> as a placeholder until that variable is reliably present. There is
+        <strong>no JavaScript</strong>; the entire flow is two native policies wired by
+        <code>sharedflows/default.xml</code>.</p>
+      </div>
+
+      <div class="pillrow">
+        <span class="layer-chip">FAPI 1.0 Advanced</span>
+        <span class="layer-chip">UK Open Banking</span>
+        <span class="chip teal">Request flow</span>
+        <span class="chip gold">Post-identity</span>
+        <span class="chip plain">No JavaScript</span>
+        <span class="chip plain">ConfigurationVersion 4.0</span>
+      </div>
+
+      <h2>Where it sits</h2>
+      <p class="lead">This is a quantitative gate, not a correctness gate: it answers
+      <em>"is this caller asking too fast or too often?"</em>, not <em>"is this caller who they
+      claim to be?"</em>. It deliberately runs late — after the access token has been validated —
+      so that the rate-limit subject can graduate from a coarse network identity
+      (<code>client.ip</code>) to a precise application identity (the token's
+      <code>client_id</code>).</p>
+
+      <p>The bundle declares exactly two policies and a single <code>default</code> sub-flow:</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>SA-PerClient</td>
+            <td>SpikeArrest</td>
+            <td>Smooth instantaneous bursts at <code>10ps</code> per identifier. <code>UseEffectiveCount</code> makes the rate apply across the message-processor pool rather than per-MP. Keyed on <code>client.ip</code> today; intended to key on the token <code>client_id</code> in production.</td>
+          </tr>
+          <tr>
+            <td>Q-ByClient</td>
+            <td>Quota (<code>type="calendar"</code>)</td>
+            <td>Enforce a hard ceiling of <code>1000</code> requests per <code>1 hour</code> per identifier. <code>Distributed</code> + <code>Synchronous</code> keep one authoritative count consistent across all MPs in the region. Same identifier story as the spike arrest.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout warn">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">SpikeArrest is not a fractional-window quota</span>
+          <p>A SpikeArrest rate of <code>10ps</code> does <em>not</em> mean "10 in any one-second
+          window". Apigee converts the rate into a minimum inter-request interval — <code>10ps</code>
+          becomes one request roughly every <code>100&nbsp;ms</code> per identifier; a second request
+          arriving <code>40&nbsp;ms</code> later is rejected even though the count for that second is
+          only two. Treat it as a smoother, and use the Quota for volume.</p>
+        </div>
+      </div>
+
+      <h2>Step order and conditions</h2>
+      <p>The <code>default</code> sub-flow runs both steps top to bottom and <strong>neither step
+      carries a <code>Condition</code></strong> — every request that reaches this flow is metered,
+      first for burstiness, then for cumulative volume. SpikeArrest comes first on purpose: it is
+      the cheapest possible rejection, so a flood is shed before it can churn the distributed quota
+      counter.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>Smooth the burst — SA-PerClient (unconditional)</h4>
+          <p>The SpikeArrest evaluates first. If requests for a given identifier arrive faster than
+          the <code>10ps</code>-derived interval, the offending request is rejected immediately with
+          a <code>SpikeArrestViolation</code> fault. Because <code>continueOnError="false"</code>,
+          that rejection short-circuits the flow — <code>Q-ByClient</code> never runs for a
+          throttled request, so a spike cannot inflate the hourly count.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Enforce the volume ceiling — Q-ByClient (unconditional)</h4>
+          <p>Requests that pass the smoother hit the calendar Quota. The distributed counter is
+          incremented synchronously; when an identifier exceeds <code>1000</code> within the current
+          hourly bucket the policy raises <code>QuotaViolation</code>. Both faults are caught and
+          re-shaped downstream by <a href="sf-error-handling.html">sf-error-handling</a> into the
+          OBIE envelope with the right <code>429</code> status.</p>
+        </div>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">sharedflows/default.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;SharedFlow</span> <span class="tok-key">name</span>=<span class="tok-str">"default"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-cmt">&lt;!-- 1. Cheap burst smoother runs first; unconditional. --&gt;</span>
+  <span class="tok-tag">&lt;Step&gt;</span>
+    <span class="tok-tag">&lt;Name&gt;</span>SA-PerClient<span class="tok-tag">&lt;/Name&gt;</span>
+  <span class="tok-tag">&lt;/Step&gt;</span>
+  <span class="tok-cmt">&lt;!-- 2. Hard hourly ceiling; only reached if the smoother let the request through. --&gt;</span>
+  <span class="tok-tag">&lt;Step&gt;</span>
+    <span class="tok-tag">&lt;Name&gt;</span>Q-ByClient<span class="tok-tag">&lt;/Name&gt;</span>
+  <span class="tok-tag">&lt;/Step&gt;</span>
+<span class="tok-tag">&lt;/SharedFlow&gt;</span></code></pre>
+      </div>
+
+      <h2>The two policies in full</h2>
+      <p>Both policies are short and native. The comment blocks in the source are load-bearing
+      documentation of the intended production identifier, so they are reproduced here verbatim.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/SA-PerClient.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;SpikeArrest</span> <span class="tok-key">async</span>=<span class="tok-str">"false"</span> <span class="tok-key">continueOnError</span>=<span class="tok-str">"false"</span> <span class="tok-key">enabled</span>=<span class="tok-str">"true"</span> <span class="tok-key">name</span>=<span class="tok-str">"SA-PerClient"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;DisplayName&gt;</span>SA-PerClient<span class="tok-tag">&lt;/DisplayName&gt;</span>
+  <span class="tok-tag">&lt;Properties/&gt;</span>
+  <span class="tok-tag">&lt;Rate&gt;</span>10ps<span class="tok-tag">&lt;/Rate&gt;</span>
+  <span class="tok-cmt">&lt;!-- production should key on the token client_id once available --&gt;</span>
+  <span class="tok-tag">&lt;Identifier</span> <span class="tok-key">ref</span>=<span class="tok-str">"client.ip"</span><span class="tok-tag">/&gt;</span>
+  <span class="tok-tag">&lt;UseEffectiveCount&gt;</span>true<span class="tok-tag">&lt;/UseEffectiveCount&gt;</span>
+<span class="tok-tag">&lt;/SpikeArrest&gt;</span></code></pre>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/Q-ByClient.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;Quota</span> <span class="tok-key">name</span>=<span class="tok-str">"Q-ByClient"</span> <span class="tok-key">type</span>=<span class="tok-str">"calendar"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;DisplayName&gt;</span>Q-ByClient<span class="tok-tag">&lt;/DisplayName&gt;</span>
+  <span class="tok-tag">&lt;Allow</span> <span class="tok-key">count</span>=<span class="tok-str">"1000"</span><span class="tok-tag">/&gt;</span>
+  <span class="tok-tag">&lt;Interval&gt;</span>1<span class="tok-tag">&lt;/Interval&gt;</span>
+  <span class="tok-tag">&lt;TimeUnit&gt;</span>hour<span class="tok-tag">&lt;/TimeUnit&gt;</span>
+  <span class="tok-cmt">&lt;!-- production keys on client_id --&gt;</span>
+  <span class="tok-tag">&lt;Identifier</span> <span class="tok-key">ref</span>=<span class="tok-str">"client.ip"</span><span class="tok-tag">/&gt;</span>
+  <span class="tok-tag">&lt;Distributed&gt;</span>true<span class="tok-tag">&lt;/Distributed&gt;</span>
+  <span class="tok-tag">&lt;Synchronous&gt;</span>true<span class="tok-tag">&lt;/Synchronous&gt;</span>
+  <span class="tok-tag">&lt;StartTime&gt;</span>2026-01-01 00:00:00<span class="tok-tag">&lt;/StartTime&gt;</span>
+<span class="tok-tag">&lt;/Quota&gt;</span></code></pre>
+      </div>
+
+      <h2>Why these specific settings</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h4>UseEffectiveCount = true</h4>
+          <p>Apigee distributes a SpikeArrest budget across the message-processor pool. With
+          <code>UseEffectiveCount</code> on, <code>10ps</code> is the rate the <em>client</em>
+          experiences regardless of how many MPs are serving traffic; without it, each MP would
+          enforce <code>10ps</code> independently and a caller hitting <code>N</code> MPs could burst
+          at up to <code>N × 10ps</code>.</p>
+        </div>
+        <div class="card">
+          <h4>Distributed + Synchronous</h4>
+          <p>A FAPI quota must be a real ceiling, not a per-MP approximation.
+          <code>Distributed="true"</code> keeps a single shared counter; <code>Synchronous="true"</code>
+          reads and writes it on every request so the limit is exact. The trade is a small
+          per-request latency cost against the counter store — acceptable for the security posture an
+          ASPSP needs.</p>
+        </div>
+        <div class="card">
+          <h4>type="calendar" + StartTime</h4>
+          <p>A <code>calendar</code> quota needs an explicit <code>StartTime</code> anchor; here
+          <code>2026-01-01 00:00:00</code>. From that anchor Apigee derives fixed, repeating hourly
+          buckets, so every client's window resets on the same clock boundary rather than drifting
+          per first-call time.</p>
+        </div>
+        <div class="card">
+          <h4>10ps vs 1000/hour</h4>
+          <p>The two limits are intentionally non-overlapping concerns. <code>10ps</code> caps
+          <em>shape</em> (no hammering); <code>1000/hour</code> caps <em>volume</em> (fair share over
+          time). A well-behaved client pacing under <code>10ps</code> can still be stopped by the
+          hourly ceiling, and vice-versa.</p>
+        </div>
+      </div>
+
+      <h2>FAPI relevance</h2>
+      <p>FAPI 1.0 Advanced raises the bar on availability and abuse-resistance for high-value
+      financial APIs, and the UK Open Banking operational guidelines expect ASPSPs to rate-limit
+      per registered TPP. This flow is where that expectation is enforced:</p>
+
+      <ul>
+        <li><strong>Per-client fairness, not per-IP.</strong> The whole reason the flow runs
+        post-identity is so that the meter subject is the registered client application
+        (<code>client_id</code>), giving each TPP its own independent budget. A shared NAT or a
+        TPP fronted by many IPs should still see one consistent limit — which is exactly what
+        <code>client.ip</code> keying <em>cannot</em> deliver, hence the production swap below.</li>
+        <li><strong>Defence in depth.</strong> Throttling sits after authentication so an attacker
+        cannot exhaust a victim's quota with unauthenticated traffic; spend is only ever attributed
+        to a validated identity.</li>
+        <li><strong>Standards-shaped rejections.</strong> A throttled request must come back as
+        <code>429 Too Many Requests</code> in the OBIE error envelope. This flow only raises the
+        native <code>SpikeArrestViolation</code> / <code>QuotaViolation</code> faults;
+        <a href="sf-error-handling.html">sf-error-handling</a> maps them to the correct status and
+        body, and <a href="sf-logging.html">sf-logging</a> records the breach with the
+        interaction id minted by <a href="sf-fapi-headers.html">sf-fapi-headers</a>.</li>
+      </ul>
+
+      <div class="callout danger">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">As-shipped, both policies key on client.ip — fix before production</span>
+          <p>The single most important change in this flow is the <code>&lt;Identifier&gt;</code>.
+          Keying on <code>client.ip</code> means a TPP behind a single egress IP can be throttled by
+          unrelated traffic from that IP, and a TPP spread across many IPs gets many budgets — both
+          violate per-client fairness. The source comments are explicit: switch both identifiers to
+          the validated token's client id (for example
+          <code>&lt;Identifier ref="apigee.client_id"/&gt;</code>, or whatever variable your token
+          validation flow publishes) once that value is reliably present.</p>
+        </div>
+      </div>
+
+      <h2>Configuration knobs for production</h2>
+      <p>This flow is almost entirely defaults and one critical placeholder. The table below is the
+      checklist to confirm before promoting beyond the eval environment.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Knob</th><th>Where</th><th>Default &amp; production guidance</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Identifier (both)</td>
+            <td>SA-PerClient &amp; Q-ByClient <code>&lt;Identifier ref&gt;</code></td>
+            <td><strong>Placeholder.</strong> Ships as <code>client.ip</code>. Change both to the OAuth <code>client_id</code> from the validated token (e.g. <code>apigee.client_id</code> or your token flow's variable) so budgets are per registered TPP.</td>
+          </tr>
+          <tr>
+            <td>Spike rate</td>
+            <td>SA-PerClient <code>&lt;Rate&gt;</code></td>
+            <td>Default <code>10ps</code>. Set to your per-TPP burst tolerance; remember it is an inter-request interval, not a per-second bucket. <code>pm</code> / <code>ps</code> units are supported.</td>
+          </tr>
+          <tr>
+            <td>Quota allowance</td>
+            <td>Q-ByClient <code>&lt;Allow count&gt;</code></td>
+            <td>Default <code>1000</code>. Set per TPP tier. For per-product or per-app variation, drive this from a variable (<code>&lt;Allow count="1000" countRef="verifyapikey.quota.count"/&gt;</code>) sourced from an API product or KVM.</td>
+          </tr>
+          <tr>
+            <td>Quota window</td>
+            <td>Q-ByClient <code>&lt;Interval&gt;</code> / <code>&lt;TimeUnit&gt;</code></td>
+            <td>Default <code>1</code> × <code>hour</code>. Adjust to match your published rate-limit policy; <code>type="calendar"</code> keeps windows aligned to <code>StartTime</code>.</td>
+          </tr>
+          <tr>
+            <td>Calendar anchor</td>
+            <td>Q-ByClient <code>&lt;StartTime&gt;</code></td>
+            <td><code>2026-01-01 00:00:00</code>. Any past timestamp works as the bucket origin; keep it stable, since changing it re-phases every client's window.</td>
+          </tr>
+          <tr>
+            <td>Effective-count scope</td>
+            <td>SA-PerClient <code>&lt;UseEffectiveCount&gt;</code></td>
+            <td>Default <code>true</code> (pool-wide rate). Leave on for accurate global throttling; only disable if you deliberately want per-MP enforcement.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Contract: what callers and downstream get</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h4>Always true after this flow</h4>
+          <p>Every request that proceeds past this flow has been admitted by both the burst smoother
+          and the hourly ceiling for its identifier. Downstream policies and the backend can assume
+          the request is within rate.</p>
+        </div>
+        <div class="card">
+          <h4>What it never does</h4>
+          <p>It performs no authentication, sets no headers, runs no script, and adds no
+          conditions — it cannot let a request "skip" metering. A throttled request stops here with
+          a native violation fault and is shaped to <code>429</code> by sf-error-handling.</p>
+        </div>
+      </div>
+
+      <div class="note">Source of truth:
+      <code>shared-flows/sf-traffic-management/sharedflowbundle/</code> — two policies
+      (<code>SA-PerClient</code>, <code>Q-ByClient</code>) wired unconditionally by
+      <code>sharedflows/default.xml</code>; bundle <code>ConfigurationVersion 4.0</code>.</div>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

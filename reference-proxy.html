@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>Reference proxy — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html" class="active">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+
+      <p class="eyebrow">Proxy &amp; operations</p>
+      <h1>Reference proxy</h1>
+
+      <div class="answer">
+        <p><code>bank-accounts-v1</code> is the single API proxy that ties the whole chassis
+        together. It exposes the UK Open Banking <strong>Account Information</strong> API at base path
+        <code>/open-banking/v1.1/accounts</code>, runs the entire FAPI security chain as seven
+        ordered <code>FlowCallout</code> steps in the request <strong>PreFlow</strong>, then — instead
+        of calling a backend — serves a hard-coded OB <code>Account</code> response from one
+        <code>AssignMessage</code> policy (<code>AM-MockAccounts</code>) in the <code>GetAccounts</code>
+        flow. The <strong>PostFlow</strong> hardens and logs the response, an empty
+        <code>&lt;RouteRule name="no-target"/&gt;</code> makes it a target-less mock, and a
+        <code>DefaultFaultRule</code> routes every fault through <code>FC-ErrorHandling</code> so
+        errors come back in OB format. It is one <code>ProxyEndpoint</code> (<code>default</code>),
+        eleven policies, no JavaScript, and no <code>TargetEndpoints</code>.</p>
+      </div>
+
+      <div class="pillrow">
+        <span class="layer-chip">FAPI 1.0 Advanced</span>
+        <span class="layer-chip">UK Open Banking</span>
+        <span class="chip teal">Account Information API</span>
+        <span class="chip plain">Mock target — no backend</span>
+        <span class="chip plain">1 ProxyEndpoint</span>
+        <span class="chip plain">ConfigurationVersion 4.0</span>
+      </div>
+
+      <h2>Where it sits</h2>
+      <p class="lead">This proxy is the consumer-facing edge. Everything documented under
+      <em>Shared flows</em> is invoked from here; the proxy itself contributes only the routing
+      surface, the flow that answers <code>GET /accounts</code>, and the wiring that decides which
+      shared flow runs when.</p>
+
+      <p>The bundle manifest declares one endpoint and the eleven policies it references — the ten
+      <code>FlowCallout</code> bridges into the shared flows plus the single
+      <code>AssignMessage</code> mock builder:</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">apiproxy/bank-accounts-v1.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;APIProxy</span> <span class="tok-key">name</span>=<span class="tok-str">"bank-accounts-v1"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;ConfigurationVersion</span> <span class="tok-key">majorVersion</span>=<span class="tok-str">"4"</span> <span class="tok-key">minorVersion</span>=<span class="tok-str">"0"</span><span class="tok-tag">/&gt;</span>
+  <span class="tok-tag">&lt;Basepaths&gt;</span>/open-banking/v1.1/accounts<span class="tok-tag">&lt;/Basepaths&gt;</span>
+  <span class="tok-tag">&lt;ProxyEndpoints&gt;</span>
+    <span class="tok-tag">&lt;ProxyEndpoint&gt;</span>default<span class="tok-tag">&lt;/ProxyEndpoint&gt;</span>
+  <span class="tok-tag">&lt;/ProxyEndpoints&gt;</span>
+  <span class="tok-tag">&lt;Resources/&gt;</span>
+  <span class="tok-tag">&lt;TargetEndpoints/&gt;</span>   <span class="tok-cmt">&lt;!-- deliberately empty: this is a mock --&gt;</span>
+<span class="tok-tag">&lt;/APIProxy&gt;</span></code></pre>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">The effective resource URL is <code>/open-banking/v1.1/accounts/accounts</code></span>
+          <p>The base path is <code>/open-banking/v1.1/accounts</code> and the <code>GetAccounts</code>
+          flow matches the path suffix <code>/accounts</code>, so the resource actually answers at
+          <code>/open-banking/v1.1/accounts/accounts</code>. The mock's <code>Links.Self</code> value
+          reflects exactly this. It is intentional in the sample and is the first thing to rename when
+          you map this onto a real OB resource model.</p>
+        </div>
+      </div>
+
+      <h2>Request lifecycle, end to end</h2>
+      <p>A request flows through the <code>default</code> <code>ProxyEndpoint</code> in this order. The
+      PreFlow runs unconditionally for every request; the conditional steps inside it are skipped when
+      their guard is false; the matched flow then builds the body; the PostFlow always runs on the way
+      out; and any fault anywhere short-circuits to the <code>DefaultFaultRule</code>.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>PreFlow — Request</h4>
+          <p>Seven security steps run in fixed order (see the table below). Four are unconditional;
+          three are guarded by conditions on the inbound headers and token claims. Any step that
+          rejects the request raises a fault and jumps to the fault rule.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Conditional flow match — GetAccounts</h4>
+          <p>If <code>proxy.pathsuffix MatchesPath "/accounts"</code> and the verb is
+          <code>GET</code>, the <code>GetAccounts</code> flow runs and its single response step
+          <code>AM-MockAccounts</code> builds the OB Account body. No request-side steps exist on this
+          flow.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>RouteRule — no-target</h4>
+          <p>The empty <code>&lt;RouteRule name="no-target"/&gt;</code> resolves with no
+          <code>TargetEndpoint</code>, so Apigee never makes a backend call. The response already built
+          by <code>AM-MockAccounts</code> is what continues outward.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>PostFlow — Response</h4>
+          <p><code>FC-SecurityHeaders</code> then <code>FC-Logging</code> run on the response, in that
+          order, hardening headers and emitting the structured audit log before the response leaves
+          the gateway.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>On any fault — DefaultFaultRule</h4>
+          <p>A raised fault at any point above transfers control to
+          <code>&lt;DefaultFaultRule name="default-fault"&gt;</code>, whose single step
+          <code>FC-ErrorHandling</code> normalises the error into the OB error envelope.</p>
+        </div>
+      </div>
+
+      <h2>The PreFlow security chain</h2>
+      <p class="lead">This is the heart of the proxy: the order in which the shared flows are applied,
+      and the conditions that decide whether the optional ones run at all. Steps execute top to bottom;
+      a step with no condition always runs.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Step</th><th>Condition</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>FC-Preflight</td>
+            <td><em>always</em></td>
+            <td>Invokes <a href="sf-preflight.html">sf-preflight</a>: CORS preflight handling, basepath/verb sanity, request-size guards, early rejection of malformed requests.</td>
+          </tr>
+          <tr>
+            <td>FC-FapiHeaders</td>
+            <td><em>always</em></td>
+            <td>Invokes <a href="sf-fapi-headers.html">sf-fapi-headers</a>: validates/echoes <code>x-fapi-interaction-id</code> (UUID), <code>x-fapi-auth-date</code>, <code>x-fapi-customer-ip-address</code>, <code>x-fapi-financial-id</code>.</td>
+          </tr>
+          <tr>
+            <td>FC-JwtValidation</td>
+            <td><em>always</em></td>
+            <td>Invokes <a href="sf-jwt-validation.html">sf-jwt-validation</a>: verifies the access-token JWT against the JWKS and checks issuer, audience, expiry and scope.</td>
+          </tr>
+          <tr>
+            <td>FC-JwsValidation</td>
+            <td><code>request.header.x-jws-signature != null</code></td>
+            <td>Invokes <a href="sf-jws-validation.html">sf-jws-validation</a> only when a detached JWS is present: validates the PS256 / <code>b64=false</code> signature and OB critical headers.</td>
+          </tr>
+          <tr>
+            <td>FC-MtlsBinding</td>
+            <td><code>jwt.VJWT-AccessToken.claim.cnf != null</code> <strong>or</strong> <code>request.header.x-client-cert != null</code></td>
+            <td>Invokes <a href="sf-mtls-binding.html">sf-mtls-binding</a> when the token is sender-constrained or a client cert was presented: matches the <code>cnf.x5t#S256</code> claim to the cert thumbprint.</td>
+          </tr>
+          <tr>
+            <td>FC-Jwe</td>
+            <td><code>content-type ~ "application/jose*"</code> <strong>or</strong> <code>~ "application/jwe*"</code></td>
+            <td>Invokes <a href="sf-jwe.html">sf-jwe</a> only for encrypted payloads: decrypts the JWE request body and exposes the cleartext downstream.</td>
+          </tr>
+          <tr>
+            <td>FC-TrafficManagement</td>
+            <td><em>always</em></td>
+            <td>Invokes <a href="sf-traffic-management.html">sf-traffic-management</a>: quota, spike arrest and concurrent-rate-limit controls keyed by client identity.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout warn">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">Order is a security decision, not a convenience</span>
+          <p>Identity is established before message integrity, binding and traffic shaping:
+          <code>FC-JwtValidation</code> populates <code>jwt.VJWT-AccessToken.claim.cnf</code>, which the
+          <em>next</em> step's <code>FC-MtlsBinding</code> condition reads. Re-ordering these steps would
+          break the mTLS-binding guard (the <code>cnf</code> claim would not yet exist) and let
+          unauthenticated traffic reach the quota counters. Treat the PreFlow sequence as load-bearing.</p>
+        </div>
+      </div>
+
+      <p>The PreFlow exactly as declared — note the three <code>&lt;Condition&gt;</code> guards and the
+      empty <code>&lt;Response/&gt;</code> (all security work happens on the request side):</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">apiproxy/proxies/default.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;PreFlow</span> <span class="tok-key">name</span>=<span class="tok-str">"PreFlow"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;Request&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;&lt;Name&gt;</span>FC-Preflight<span class="tok-tag">&lt;/Name&gt;&lt;/Step&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;&lt;Name&gt;</span>FC-FapiHeaders<span class="tok-tag">&lt;/Name&gt;&lt;/Step&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;&lt;Name&gt;</span>FC-JwtValidation<span class="tok-tag">&lt;/Name&gt;&lt;/Step&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;</span>
+      <span class="tok-tag">&lt;Name&gt;</span>FC-JwsValidation<span class="tok-tag">&lt;/Name&gt;</span>
+      <span class="tok-tag">&lt;Condition&gt;</span>(request.header.x-jws-signature != null)<span class="tok-tag">&lt;/Condition&gt;</span>
+    <span class="tok-tag">&lt;/Step&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;</span>
+      <span class="tok-tag">&lt;Name&gt;</span>FC-MtlsBinding<span class="tok-tag">&lt;/Name&gt;</span>
+      <span class="tok-tag">&lt;Condition&gt;</span>(jwt.VJWT-AccessToken.claim.cnf != null) or (request.header.x-client-cert != null)<span class="tok-tag">&lt;/Condition&gt;</span>
+    <span class="tok-tag">&lt;/Step&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;</span>
+      <span class="tok-tag">&lt;Name&gt;</span>FC-Jwe<span class="tok-tag">&lt;/Name&gt;</span>
+      <span class="tok-tag">&lt;Condition&gt;</span>(request.header.content-type ~ "application/jose*") or (request.header.content-type ~ "application/jwe*")<span class="tok-tag">&lt;/Condition&gt;</span>
+    <span class="tok-tag">&lt;/Step&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;&lt;Name&gt;</span>FC-TrafficManagement<span class="tok-tag">&lt;/Name&gt;&lt;/Step&gt;</span>
+  <span class="tok-tag">&lt;/Request&gt;</span>
+  <span class="tok-tag">&lt;Response/&gt;</span>
+<span class="tok-tag">&lt;/PreFlow&gt;</span></code></pre>
+      </div>
+
+      <h2>The GetAccounts flow</h2>
+      <p class="lead">One conditional flow answers the only modelled resource. It does nothing on the
+      request side; on the response side it runs a single policy that synthesises the body.</p>
+
+      <p>The flow condition combines an OB-style path match with a verb check, so only
+      <code>GET</code> on the <code>/accounts</code> suffix is served — anything else falls through to
+      no matching flow:</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">apiproxy/proxies/default.xml — Flows</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;Flow</span> <span class="tok-key">name</span>=<span class="tok-str">"GetAccounts"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;Description&gt;</span>GET /accounts - returns the mock OB Account list.<span class="tok-tag">&lt;/Description&gt;</span>
+  <span class="tok-tag">&lt;Condition&gt;</span>(proxy.pathsuffix MatchesPath "/accounts") and (request.verb = "GET")<span class="tok-tag">&lt;/Condition&gt;</span>
+  <span class="tok-tag">&lt;Request/&gt;</span>
+  <span class="tok-tag">&lt;Response&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;&lt;Name&gt;</span>AM-MockAccounts<span class="tok-tag">&lt;/Name&gt;&lt;/Step&gt;</span>
+  <span class="tok-tag">&lt;/Response&gt;</span>
+<span class="tok-tag">&lt;/Flow&gt;</span></code></pre>
+      </div>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>AM-MockAccounts</td>
+            <td>AssignMessage</td>
+            <td>Builds the mock OB Account Information response in place. <code>AssignTo createNew="false" type="response"</code>, <code>IgnoreUnresolvedVariables=true</code>. Sets status <code>200</code>, <code>Content-Type: application/json</code>, and a static OB <code>Account</code> JSON payload. There is no backend, so this policy <em>is</em> the response.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>The mock OB Account payload</h2>
+      <p>The payload below is what <code>AM-MockAccounts</code> emits. In the source it is stored as a
+      single-line <code>&lt;Payload&gt;</code> string; it is pretty-printed here for reading. It is a
+      valid UK Open Banking <code>Read/Account</code> shape — <code>Data.Account[]</code> with one
+      account, plus the <code>Links</code> and <code>Meta</code> envelope OB requires.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">AM-MockAccounts — response body</span><span class="code-lang">JSON</span></div>
+<pre><code>{
+  "Data": {
+    "Account": [
+      {
+        "AccountId": "ACCT-0001",
+        "Currency": "GBP",
+        "AccountType": "Personal",
+        "AccountSubType": "CurrentAccount",
+        "Nickname": "Current Account",
+        "Account": [
+          {
+            "SchemeName": "UK.OBIE.SortCodeAccountNumber",
+            "Identification": "00000000000000",
+            "Name": "Account Holder"
+          }
+        ]
+      }
+    ]
+  },
+  "Links": {
+    "Self": "https://apigee/open-banking/v1.1/accounts/accounts"
+  },
+  "Meta": {
+    "TotalPages": 1
+  }
+}</code></pre>
+      </div>
+
+      <p>And the policy that sets it, verbatim:</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">apiproxy/policies/AM-MockAccounts.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;AssignMessage</span> <span class="tok-key">name</span>=<span class="tok-str">"AM-MockAccounts"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;AssignTo</span> <span class="tok-key">createNew</span>=<span class="tok-str">"false"</span> <span class="tok-key">type</span>=<span class="tok-str">"response"</span><span class="tok-tag">/&gt;</span>
+  <span class="tok-tag">&lt;IgnoreUnresolvedVariables&gt;</span>true<span class="tok-tag">&lt;/IgnoreUnresolvedVariables&gt;</span>
+  <span class="tok-tag">&lt;Set&gt;</span>
+    <span class="tok-tag">&lt;StatusCode&gt;</span>200<span class="tok-tag">&lt;/StatusCode&gt;</span>
+    <span class="tok-tag">&lt;Headers&gt;</span>
+      <span class="tok-tag">&lt;Header</span> <span class="tok-key">name</span>=<span class="tok-str">"Content-Type"</span><span class="tok-tag">&gt;</span>application/json<span class="tok-tag">&lt;/Header&gt;</span>
+    <span class="tok-tag">&lt;/Headers&gt;</span>
+    <span class="tok-tag">&lt;Payload</span> <span class="tok-key">contentType</span>=<span class="tok-str">"application/json"</span><span class="tok-tag">&gt;</span>{ ... OB Account JSON ... }<span class="tok-tag">&lt;/Payload&gt;</span>
+  <span class="tok-tag">&lt;/Set&gt;</span>
+<span class="tok-tag">&lt;/AssignMessage&gt;</span></code></pre>
+      </div>
+
+      <h2>The PostFlow</h2>
+      <p>The PostFlow has no request-side steps. On the response it runs two FlowCallouts in order, so
+      every response — mock success today, and any real backend response later — is hardened and then
+      logged:</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Step</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>FC-SecurityHeaders</td>
+            <td>FlowCallout</td>
+            <td>Invokes <a href="sf-security-headers.html">sf-security-headers</a>: sets HSTS, <code>X-Content-Type-Options</code>, CSP, <code>Cache-Control: no-store</code> and the echoed <code>x-fapi-interaction-id</code>; strips fingerprint headers.</td>
+          </tr>
+          <tr>
+            <td>FC-Logging</td>
+            <td>FlowCallout</td>
+            <td>Invokes <a href="sf-logging.html">sf-logging</a>: emits structured audit/access logs correlated by <code>x-fapi-interaction-id</code>, with PII and secrets masked.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>The no-target RouteRule — the mock pattern</h2>
+      <p class="lead">An Apigee proxy normally ends with a <code>RouteRule</code> that names a
+      <code>TargetEndpoint</code>. This proxy deliberately omits the target, which is what turns it
+      into a self-contained mock.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">apiproxy/proxies/default.xml — routing</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;HTTPProxyConnection&gt;</span>
+  <span class="tok-tag">&lt;BasePath&gt;</span>/open-banking/v1.1/accounts<span class="tok-tag">&lt;/BasePath&gt;</span>
+<span class="tok-tag">&lt;/HTTPProxyConnection&gt;</span>
+<span class="tok-tag">&lt;RouteRule</span> <span class="tok-key">name</span>=<span class="tok-str">"no-target"</span><span class="tok-tag">/&gt;</span>   <span class="tok-cmt">&lt;!-- no &lt;TargetEndpoint&gt; --&gt;</span></code></pre>
+      </div>
+
+      <p>Because the <code>RouteRule</code> has an empty body, it matches unconditionally and routes to
+      <em>nothing</em>. Apigee skips the entire TargetEndpoint round-trip and proceeds straight to the
+      response PostFlow, carrying whatever the flow built. This is the canonical Apigee way to ship a
+      contract-first mock: the proxy is fully wired and deployable, but no upstream system needs to
+      exist. The manifest reinforces this with an empty <code>&lt;TargetEndpoints/&gt;</code> element.</p>
+
+      <div class="callout info">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">From mock to real with two edits</span>
+          <p>To front a live ASPSP backend, add a <code>TargetEndpoint</code> (with its own mTLS and
+          target SSL config), give the <code>RouteRule</code> a <code>&lt;TargetEndpoint&gt;</code>
+          child, and remove the <code>AM-MockAccounts</code> step from the <code>GetAccounts</code>
+          flow (or move it behind a condition). The entire PreFlow security chain, PostFlow and fault
+          handling continue to apply unchanged — that separation is the point of the chassis.</p>
+        </div>
+      </div>
+
+      <h2>The DefaultFaultRule</h2>
+      <p>The endpoint declares one fault rule. Any fault raised by any PreFlow step, the flow policy,
+      or the PostFlow transfers control here, and its single step normalises the error:</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">apiproxy/proxies/default.xml — faults</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;DefaultFaultRule</span> <span class="tok-key">name</span>=<span class="tok-str">"default-fault"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;Step&gt;&lt;Name&gt;</span>FC-ErrorHandling<span class="tok-tag">&lt;/Name&gt;&lt;/Step&gt;</span>
+<span class="tok-tag">&lt;/DefaultFaultRule&gt;</span></code></pre>
+      </div>
+
+      <p><code>FC-ErrorHandling</code> invokes <a href="sf-error-handling.html">sf-error-handling</a>,
+      which renders the OB Read/Write error envelope <code>{ Code, Id, Message, Errors[] }</code>,
+      using the <code>x-fapi-interaction-id</code> as the error <code>Id</code> and a generic
+      <code>Message</code> so internal detail never leaks to the caller.</p>
+
+      <div class="callout warn">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">Security headers may not run on the error path</span>
+          <p>The <code>DefaultFaultRule</code> runs only <code>FC-ErrorHandling</code>. Whether the
+          PostFlow's <code>FC-SecurityHeaders</code> also executes on a faulted response depends on
+          where the fault was raised. For production, reference <code>sf-security-headers</code> from
+          the fault rule too, so error responses are hardened identically to success responses (see
+          the <a href="sf-security-headers.html">sf-security-headers</a> note).</p>
+        </div>
+      </div>
+
+      <h2>FAPI relevance</h2>
+      <p>The proxy contributes the <em>composition</em> that makes the chassis FAPI 1.0 Advanced
+      compliant — the individual obligations live in the shared flows, but this file is where they are
+      ordered and gated:</p>
+      <ul>
+        <li><strong>Defence in depth, in the right order.</strong> Identity (<code>FC-JwtValidation</code>)
+        precedes message integrity (<code>FC-JwsValidation</code>), sender-constraining
+        (<code>FC-MtlsBinding</code>) and rate controls — so each later check can rely on the claims and
+        state the earlier ones established.</li>
+        <li><strong>Conditional cryptography only when present.</strong> Detached-JWS validation, mTLS
+        binding and JWE decryption are gated on the actual request shape, so the proxy enforces them
+        when they apply without rejecting compliant requests that legitimately omit them.</li>
+        <li><strong>Correlation everywhere.</strong> <code>FC-FapiHeaders</code> establishes the
+        <code>x-fapi-interaction-id</code> early; the PostFlow echoes it and logs by it; the fault rule
+        uses it as the error <code>Id</code> — one id threads request, response, log and error.</li>
+        <li><strong>OB-shaped contracts.</strong> Both the success body (OB <code>Account</code>) and the
+        error body (OB error envelope) match the UK Open Banking schemas a TPP expects.</li>
+      </ul>
+
+      <h2>Configuration knobs for production</h2>
+      <p>The proxy ships as a working mock. The items below are what a team should consciously change
+      when promoting it to front a real backend or a different resource.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Knob</th><th>Where</th><th>Default &amp; production guidance</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Base path / version</td>
+            <td><code>HTTPProxyConnection &gt; BasePath</code> and <code>&lt;Basepaths&gt;</code></td>
+            <td><code>/open-banking/v1.1/accounts</code>. Align with your OB API version and host routing; keep manifest and endpoint in sync.</td>
+          </tr>
+          <tr>
+            <td>Resource path</td>
+            <td><code>GetAccounts</code> flow <code>Condition</code></td>
+            <td>Matches suffix <code>/accounts</code>, producing the doubled <code>/accounts/accounts</code> URL. Rename to the real OB resource path and add flows for <code>/accounts/{AccountId}</code>, transactions, balances, etc.</td>
+          </tr>
+          <tr>
+            <td>Backend target</td>
+            <td><code>RouteRule</code> &amp; <code>TargetEndpoints</code></td>
+            <td>Empty <code>no-target</code> RouteRule = mock. Add a <code>TargetEndpoint</code> with target mTLS and give the RouteRule a <code>&lt;TargetEndpoint&gt;</code> child to call a live ASPSP.</td>
+          </tr>
+          <tr>
+            <td>Mock vs. live response</td>
+            <td><code>AM-MockAccounts</code> step</td>
+            <td>Static <code>ACCT-0001 / Account Holder</code> sample data. Remove or condition the step once a real target is wired; never ship the mock to production unguarded.</td>
+          </tr>
+          <tr>
+            <td>Fault-path hardening</td>
+            <td><code>DefaultFaultRule</code></td>
+            <td>Runs only <code>FC-ErrorHandling</code>. Add <code>FC-SecurityHeaders</code> (and optionally <code>FC-Logging</code>) so error responses are hardened and audited like successes.</td>
+          </tr>
+          <tr>
+            <td>Self link host</td>
+            <td><code>AM-MockAccounts</code> payload</td>
+            <td><code>Links.Self</code> is hard-coded to <code>https://apigee/...</code>. Replace with your real host (ideally derived from request context) so the OB pagination/self links are usable.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Contract: what this proxy guarantees</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h4>Always true</h4>
+          <p>Every request runs the full PreFlow security chain in fixed order before any business
+          logic; <code>GET /open-banking/v1.1/accounts/accounts</code> returns the OB
+          <code>Account</code> body with <code>200</code>; every response passes through
+          <code>FC-SecurityHeaders</code> and <code>FC-Logging</code>; every fault is normalised by
+          <code>FC-ErrorHandling</code>.</p>
+        </div>
+        <div class="card">
+          <h4>Never happens</h4>
+          <p>No backend call is ever made (the RouteRule is target-less); no JavaScript runs in the
+          proxy itself; the optional crypto steps never run unless their request shape is present; and
+          no flow other than <code>GetAccounts</code> is served.</p>
+        </div>
+      </div>
+
+      <div class="note">Source of truth:
+      <code>apiproxies/bank-accounts-v1/apiproxy/</code> — manifest
+      <code>bank-accounts-v1.xml</code>, endpoint <code>proxies/default.xml</code>, policy
+      <code>policies/AM-MockAccounts.xml</code> plus ten <code>FC-*</code> FlowCallouts;
+      <code>ConfigurationVersion</code> 4.0; no <code>TargetEndpoints</code>.</div>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

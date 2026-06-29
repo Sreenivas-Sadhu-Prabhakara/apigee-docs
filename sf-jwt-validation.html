@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>sf-jwt-validation — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html" class="active">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <p class="eyebrow">Shared flow · OAuth2 / FAPI</p>
+      <h1>sf-jwt-validation</h1>
+
+      <div class="answer">
+        <p><code>sf-jwt-validation</code> proves the caller is carrying a valid, in-scope OAuth2 access token before any request reaches the accounts backend. It runs four policies in order: <strong>extract</strong> the bearer token from the <code>Authorization</code> header, <strong>fault 401</strong> if no token was presented, <strong>VerifyJWT</strong> the access token's signature/issuer/audience/expiry against the authorization server's JWKS, then <strong>fault 403</strong> if the verified token does not carry an <code>accounts</code> scope. There is no token-introspection round trip — verification is stateless and offline against rotating JWKS keys.</p>
+      </div>
+
+      <p class="lead">This flow is the authorization gate of the FAPI 1.0 Advanced chassis. Network-edge concerns (mTLS, headers, preflight) run before it; payload-integrity concerns (JWS, JWE) run after it. Its single job is: <em>is this a genuine, unexpired, correctly-audienced token, and does it grant the accounts permission?</em></p>
+
+      <h2>Policies in this bundle</h2>
+      <p>Four policies, declared in <code>sf-jwt-validation.xml</code> and sequenced by <code>sharedflows/default.xml</code>.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>EV-BearerToken</td>
+            <td>ExtractVariables</td>
+            <td>Parse the <code>Authorization</code> header with pattern <code>Bearer {oauth.access.token}</code>, landing the raw JWT in the <code>oauth.access.token</code> variable.</td>
+          </tr>
+          <tr>
+            <td>RF-MissingToken</td>
+            <td>RaiseFault</td>
+            <td>Return <span class="chip errst">401</span> <code>UK.OBIE.Unauthorized</code> when no token (or an empty token) was presented.</td>
+          </tr>
+          <tr>
+            <td>VJWT-AccessToken</td>
+            <td>VerifyJWT</td>
+            <td>Verify the access-token JWT — RS256 signature via JWKS, plus issuer, audience and expiry checks.</td>
+          </tr>
+          <tr>
+            <td>RF-InsufficientScope</td>
+            <td>RaiseFault</td>
+            <td>Return <span class="chip errst">403</span> <code>UK.OBIE.Forbidden</code> when the verified token's <code>scope</code> claim does not contain <code>accounts</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Step order &amp; conditions</h2>
+      <p>The sequence below is exactly what <code>sharedflows/default.xml</code> executes. Two of the four steps are conditional; the extract and verify steps always run.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>EV-BearerToken — always runs</h4>
+          <p>ExtractVariables reads the request <code>Authorization</code> header and applies the case-insensitive pattern <code>Bearer {oauth.access.token}</code>. The brace name <em>is</em> the target variable, so the token lands in exactly <code>oauth.access.token</code> with no variable prefix. <code>IgnoreUnresolvedVariables</code> is <code>true</code> — a missing header does not fault here; the next step owns that decision.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>RF-MissingToken — condition</h4>
+          <p>Runs only when <code>(oauth.access.token = null) or (oauth.access.token = "")</code>. Raises <span class="chip errst">401 Unauthorized</span> with a <code>WWW-Authenticate: Bearer error="invalid_token"</code> header and an OBIE error body. This terminates the request before VerifyJWT.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>VJWT-AccessToken — always runs (when reached)</h4>
+          <p>VerifyJWT validates the JWT in <code>oauth.access.token</code>: signature against the JWKS, <code>iss</code> against the configured issuer, <code>aud</code> against the configured audience, and <code>exp</code> for expiry. A failure raises Apigee's built-in JWT fault, surfaced as an error by <code>sf-error-handling</code>. On success it publishes claim variables such as <code>jwt.VJWT-AccessToken.claim.scope</code>.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>RF-InsufficientScope — condition</h4>
+          <p>Runs only when <code>NOT(jwt.VJWT-AccessToken.claim.scope ~ "*accounts*")</code>. Raises <span class="chip errst">403 Forbidden</span> with <code>WWW-Authenticate: Bearer error="insufficient_scope"</code> and an OBIE error body. A token that is valid but lacks the accounts permission is rejected here.</p>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M12 11v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="7.75" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Why VerifyJWT runs unconditionally</span>
+          <p>VJWT-AccessToken carries no <code>&lt;Condition&gt;</code>. It is safe because RF-MissingToken has already terminated any request where <code>oauth.access.token</code> is null or empty. If a token is present, it must be verified — there is no path that skips verification while still presenting a token.</p>
+        </div>
+      </div>
+
+      <h2>The policies, as written</h2>
+
+      <h3>EV-BearerToken — extract the bearer token</h3>
+      <p>A pattern-match extract. The deliberate absence of <code>&lt;VariablePrefix&gt;</code> is what keeps the variable name clean enough for the downstream condition and the VerifyJWT <code>&lt;Source&gt;</code> to reference it directly.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/EV-BearerToken.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;ExtractVariables</span> <span class="tok-key">name</span>=<span class="tok-str">"EV-BearerToken"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;Source</span> <span class="tok-key">clearPayload</span>=<span class="tok-str">"false"</span><span class="tok-tag">&gt;</span>request<span class="tok-tag">&lt;/Source&gt;</span>
+  <span class="tok-tag">&lt;Header</span> <span class="tok-key">name</span>=<span class="tok-str">"Authorization"</span><span class="tok-tag">&gt;</span>
+    <span class="tok-tag">&lt;Pattern</span> <span class="tok-key">ignoreCase</span>=<span class="tok-str">"true"</span><span class="tok-tag">&gt;</span>Bearer {oauth.access.token}<span class="tok-tag">&lt;/Pattern&gt;</span>
+  <span class="tok-tag">&lt;/Header&gt;</span>
+  <span class="tok-cmt">&lt;!-- No VariablePrefix: the brace name IS the full variable name. --&gt;</span>
+  <span class="tok-tag">&lt;IgnoreUnresolvedVariables&gt;</span>true<span class="tok-tag">&lt;/IgnoreUnresolvedVariables&gt;</span>
+<span class="tok-tag">&lt;/ExtractVariables&gt;</span></code></pre>
+      </div>
+
+      <h3>VJWT-AccessToken — verify the access token</h3>
+      <p>Stateless verification against the authorization server's published keys. The JWKS URI is used (not an inline key) so signing keys can rotate without redeploying the proxy.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/VJWT-AccessToken.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;VerifyJWT</span> <span class="tok-key">name</span>=<span class="tok-str">"VJWT-AccessToken"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;Algorithm&gt;</span>RS256<span class="tok-tag">&lt;/Algorithm&gt;</span>
+  <span class="tok-tag">&lt;Source&gt;</span>oauth.access.token<span class="tok-tag">&lt;/Source&gt;</span>
+  <span class="tok-tag">&lt;PublicKey&gt;</span>
+    <span class="tok-tag">&lt;JWKS</span> <span class="tok-key">uri</span>=<span class="tok-str">"https://auth.example.com/.well-known/jwks.json"</span><span class="tok-tag">/&gt;</span>
+  <span class="tok-tag">&lt;/PublicKey&gt;</span>
+  <span class="tok-tag">&lt;Issuer&gt;</span>https://auth.example.com<span class="tok-tag">&lt;/Issuer&gt;</span>
+  <span class="tok-tag">&lt;Audience&gt;</span>accounts-api<span class="tok-tag">&lt;/Audience&gt;</span>
+<span class="tok-tag">&lt;/VerifyJWT&gt;</span></code></pre>
+      </div>
+
+      <h3>RF-MissingToken &amp; RF-InsufficientScope — the rejections</h3>
+      <p>Both faults emit JSON in UK Open Banking error shape, set an RFC 6750 <code>WWW-Authenticate</code> header, and echo the FAPI interaction id so the failure is traceable end to end.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/RF-MissingToken.xml — FaultResponse</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;Header</span> <span class="tok-key">name</span>=<span class="tok-str">"WWW-Authenticate"</span><span class="tok-tag">&gt;</span>Bearer error="invalid_token",
+        error_description="Missing access token"<span class="tok-tag">&lt;/Header&gt;</span>
+<span class="tok-tag">&lt;Header</span> <span class="tok-key">name</span>=<span class="tok-str">"x-fapi-interaction-id"</span><span class="tok-tag">&gt;</span>{request.header.x-fapi-interaction-id}<span class="tok-tag">&lt;/Header&gt;</span>
+<span class="tok-tag">&lt;Payload</span> <span class="tok-key">contentType</span>=<span class="tok-str">"application/json"</span><span class="tok-tag">&gt;</span>{
+  "Code": "401",
+  "Id": "{request.header.x-fapi-interaction-id}",
+  "Message": "Unauthorized",
+  "Errors": [
+    { "ErrorCode": "UK.OBIE.Unauthorized",
+      "Message": "Missing or empty access token" }
+  ]
+}<span class="tok-tag">&lt;/Payload&gt;</span>
+<span class="tok-tag">&lt;StatusCode&gt;</span>401<span class="tok-tag">&lt;/StatusCode&gt;</span></code></pre>
+      </div>
+      <p class="muted">RF-InsufficientScope is structurally identical with <code>error="insufficient_scope"</code>, <code>UK.OBIE.Forbidden</code>, and <code>&lt;StatusCode&gt;403&lt;/StatusCode&gt;</code>.</p>
+
+      <h2>FAPI relevance</h2>
+      <p>This flow implements the resource-server side of FAPI 1.0 Advanced token handling.</p>
+      <div class="pillrow">
+        <span class="layer-chip">Bearer extraction</span>
+        <span class="layer-chip">Stateless JWT verification</span>
+        <span class="layer-chip">JWKS key rotation</span>
+        <span class="layer-chip">Scope enforcement</span>
+        <span class="layer-chip">OBIE error contract</span>
+      </div>
+      <ul>
+        <li><strong>Signed access tokens.</strong> FAPI requires asymmetric signatures; this flow verifies RS256 (with PS256 a one-line change — see below). No HMAC, no shared secret.</li>
+        <li><strong>Issuer &amp; audience binding.</strong> <code>&lt;Issuer&gt;</code> and <code>&lt;Audience&gt;</code> ensure a token minted for a different AS or a different API is rejected, blocking token-substitution attacks.</li>
+        <li><strong>Correct HTTP semantics.</strong> Missing credential → 401 with <code>WWW-Authenticate: invalid_token</code>; valid-but-under-privileged → 403 with <code>insufficient_scope</code>, per RFC 6750.</li>
+        <li><strong>Traceability.</strong> Every fault echoes <code>x-fapi-interaction-id</code>, satisfying the FAPI interaction-tracing requirement even on rejected calls.</li>
+      </ul>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 4.5 21 19.5H3L12 4.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M12 10v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="16.75" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Scope check is a substring match</span>
+          <p>The condition <code>scope ~ "*accounts*"</code> is a wildcard match against the whole space-delimited <code>scope</code> claim. It accepts any token whose scope string <em>contains</em> the substring <code>accounts</code> (e.g. <code>accounts</code>, <code>accounts:read</code>, <code>openid accounts</code>). For finer-grained authorization (read vs. write, consent-scoped grants), tighten this condition or add a dedicated scope policy downstream.</p>
+        </div>
+      </div>
+
+      <h2>Configuration knobs</h2>
+      <p>These are the placeholder values to change before production. All live in <code>VJWT-AccessToken.xml</code> except the scope substring, which is in <code>sharedflows/default.xml</code>.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4>Algorithm</h4>
+          <p><code>&lt;Algorithm&gt;RS256&lt;/Algorithm&gt;</code> is the shipped default. FAPI prefers <strong>PS256</strong> (RSASSA-PSS); to enforce it, change the element to <code>&lt;Algorithm&gt;PS256&lt;/Algorithm&gt;</code> and ensure the AS signs with the matching algorithm.</p>
+        </div>
+        <div class="card">
+          <h4>JWKS URI</h4>
+          <p><code>https://auth.example.com/.well-known/jwks.json</code> is a placeholder. Point it at your real authorization server's JWKS endpoint. For offline tests, swap the <code>&lt;JWKS/&gt;</code> for <code>&lt;PublicKey&gt;&lt;Value&gt;PEM&lt;/Value&gt;&lt;/PublicKey&gt;</code>.</p>
+        </div>
+        <div class="card">
+          <h4>Issuer</h4>
+          <p><code>&lt;Issuer&gt;https://auth.example.com&lt;/Issuer&gt;</code> must exactly match the <code>iss</code> claim your AS stamps into access tokens.</p>
+        </div>
+        <div class="card">
+          <h4>Audience</h4>
+          <p><code>&lt;Audience&gt;accounts-api&lt;/Audience&gt;</code> must match the <code>aud</code> claim expected by this resource server.</p>
+        </div>
+        <div class="card">
+          <h4>Required scope</h4>
+          <p>The substring in <code>NOT(...scope ~ "*accounts*")</code> in <code>default.xml</code>. Change <code>accounts</code> to the scope your API requires, and consider an exact-match condition for stricter checks.</p>
+        </div>
+        <div class="card">
+          <h4>Error contract</h4>
+          <p>The <code>UK.OBIE.*</code> error codes and messages in both RaiseFault payloads. Keep them aligned with your tenant's published OBIE error catalogue.</p>
+        </div>
+      </div>
+
+      <div class="callout danger">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M12 7.5v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="16" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Do not ship the example issuer/audience</span>
+          <p>The <code>*.example.com</code> issuer and JWKS URI and the <code>accounts-api</code> audience are non-resolvable placeholders. Left unchanged, every VerifyJWT will fail (JWKS fetch error or issuer mismatch) and no request will reach the backend. Replace all four <code>VerifyJWT</code> values as the first step of any real deployment.</p>
+        </div>
+      </div>
+
+      <h2>Where this fits</h2>
+      <p>In the reference proxy this shared flow is invoked from the request <code>PreFlow</code> after the network and header flows and before payload-integrity validation. The cumulative order is:</p>
+      <div class="pillrow">
+        <span class="chip plain">sf-mtls-binding</span>
+        <span class="chip plain">sf-preflight</span>
+        <span class="chip plain">sf-fapi-headers</span>
+        <span class="chip gold">sf-jwt-validation</span>
+        <span class="chip plain">sf-jws-validation</span>
+        <span class="chip plain">sf-jwe</span>
+      </div>
+      <p class="note">By the time <code>sf-jwt-validation</code> completes, the request is known to carry a cryptographically valid, correctly-audienced, in-scope access token — the precondition every downstream policy assumes.</p>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

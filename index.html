@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>Overview — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html" class="active">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <p class="eyebrow">Apigee X · Open Banking chassis</p>
+      <h1>Overview</h1>
+
+      <div class="answer">
+        <p><strong>This is a policy chassis for Apigee X</strong> — a fleet of ten versioned
+        shared flows that together implement the <strong>FAPI 1.0 Advanced</strong> security profile
+        for UK Open Banking. API proxies stay deliberately thin: they declare a base path, route to a
+        target, and delegate <em>every</em> cross-cutting concern — admission control, identity,
+        message integrity, traffic, observability, and fault shaping — to the shared flows through
+        <code>FlowCallout</code> steps. A team shipping a new API inherits the whole security posture
+        by wiring in callouts; they write almost no security code themselves.</p>
+      </div>
+
+      <p class="lead">This site documents what the chassis actually does, flow by flow, exactly as it
+      is built in the private code repository — real policy names, real
+      step order, real conditions.</p>
+
+      <div class="pillrow">
+        <span class="layer-chip">Detached JWS · PS256</span>
+        <span class="layer-chip">JWE payloads</span>
+        <span class="layer-chip">Cert-bound tokens · cnf x5t#S256</span>
+        <span class="layer-chip">x-fapi-* headers</span>
+        <span class="layer-chip">OB / RFC&nbsp;7807 faults</span>
+      </div>
+
+      <h2>The policy-chassis pattern</h2>
+      <p>A conventional proxy accretes security logic until it becomes unmaintainable and every team
+      reinvents the same controls slightly differently. This chassis inverts that. Cross-cutting policy
+      lives once, in shared flows; proxies <em>compose</em> them. The reference proxy
+      <code>bank-accounts-v1</code> is the canonical example — its entire <code>PreFlow</code> is a
+      list of callouts, and the only business logic is a single mock-response step.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">bank-accounts-v1/apiproxy/proxies/default.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;PreFlow</span> <span class="tok-key">name</span>=<span class="tok-str">"PreFlow"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;Request&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;&lt;Name&gt;</span>FC-Preflight<span class="tok-tag">&lt;/Name&gt;&lt;/Step&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;&lt;Name&gt;</span>FC-FapiHeaders<span class="tok-tag">&lt;/Name&gt;&lt;/Step&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;&lt;Name&gt;</span>FC-JwtValidation<span class="tok-tag">&lt;/Name&gt;&lt;/Step&gt;</span>
+    <span class="tok-tag">&lt;Step&gt;</span>
+      <span class="tok-tag">&lt;Name&gt;</span>FC-JwsValidation<span class="tok-tag">&lt;/Name&gt;</span>
+      <span class="tok-tag">&lt;Condition&gt;</span>(request.header.x-jws-signature != null)<span class="tok-tag">&lt;/Condition&gt;</span>
+    <span class="tok-tag">&lt;/Step&gt;</span>
+    <span class="tok-cmt">&lt;!-- FC-MtlsBinding, FC-Jwe (both conditional), FC-TrafficManagement --&gt;</span>
+  <span class="tok-tag">&lt;/Request&gt;</span>
+<span class="tok-tag">&lt;/PreFlow&gt;</span></code></pre>
+      </div>
+
+      <p>Each <code>FC-*</code> step is a <code>FlowCallout</code> that invokes one shared flow. Because
+      the proxy references shared flows by name, the chassis can be hardened in one place and every
+      proxy inherits the change on the next deploy.</p>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.5h.01"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Conditions are the chassis logic</span>
+          <p>Several steps run only when relevant. Signature verification fires only when
+          <code>x-jws-signature</code> is present; certificate binding only when the token carries a
+          <code>cnf</code> claim or a client cert is forwarded; JWE decryption only for
+          <code>application/jose</code> / <code>application/jwe</code> bodies. This keeps the demo
+          <code>GET</code> flowing while leaving each control ready to be made mandatory per proxy.</p>
+        </div>
+      </div>
+
+      <h2>Request lifecycle</h2>
+      <p>Every request to an Apigee proxy traverses the same ordered pipeline. The
+      <code>PreFlow</code> enforces the security chassis, the matched flow returns data, and the
+      <code>PostFlow</code> finishes the response. Any thrown fault short-circuits to the
+      <code>DefaultFaultRule</code>.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>PreFlow · FC-Preflight</h4>
+          <p>Admission control: per-IP spike arrest, then reject unsupported HTTP verbs (405),
+          missing/invalid content types on body verbs (415), and payloads over 1&nbsp;MiB (413).</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>PreFlow · FC-FapiHeaders</h4>
+          <p>Validate and normalise FAPI headers — echo or mint <code>x-fapi-interaction-id</code> as
+          a UUID, and validate <code>x-fapi-customer-ip-address</code> (IPv4/IPv6) when present.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>PreFlow · FC-JwtValidation</h4>
+          <p>Extract the bearer token, fault 401 if absent, verify the access-token JWT against the
+          JWKS (signature, issuer, audience, expiry), and fault 403 without an <code>accounts</code>
+          scope.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>PreFlow · FC-JwsValidation <span class="chip teal">conditional</span></h4>
+          <p>Runs only when <code>x-jws-signature</code> is present. Verifies the detached
+          <strong>PS256</strong> request signature for non-repudiation of the message.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>PreFlow · FC-MtlsBinding <span class="chip teal">conditional</span></h4>
+          <p>Runs when the token carries a <code>cnf</code> claim <em>or</em> a
+          <code>x-client-cert</code> header is forwarded. Confirms the access token is bound to the
+          presenting client certificate (<code>cnf x5t#S256</code>); fault on mismatch.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>PreFlow · FC-Jwe <span class="chip teal">conditional</span></h4>
+          <p>Runs for <code>application/jose</code> / <code>application/jwe</code> content types.
+          Decrypts the inbound JWE payload so downstream policy sees cleartext.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>PreFlow · FC-TrafficManagement</h4>
+          <p>Per-client spike arrest plus a per-client quota — protects the backend after the request
+          has proven itself authentic and well-formed.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Route · GetAccounts → AM-MockAccounts</h4>
+          <p>When <code>proxy.pathsuffix</code> matches <code>/accounts</code> on a <code>GET</code>,
+          an <code>AssignMessage</code> returns a mock OB Account list. The proxy ships with
+          <code>RouteRule name="no-target"</code> — no external dependency.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>PostFlow · FC-SecurityHeaders</h4>
+          <p>Stamp hardening response headers on the way out — HSTS, CSP, <code>nosniff</code>, and
+          cache-control directives.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>PostFlow · FC-Logging</h4>
+          <p>Emit a structured log/analytics context record keyed by the interaction id for
+          end-to-end traceability.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>On any fault · FC-ErrorHandling</h4>
+          <p>The <code>DefaultFaultRule</code> maps any raised fault to an OB / RFC&nbsp;7807 error
+          body with PII masking — so even a rejected request returns a clean, standard shape.</p>
+        </div>
+      </div>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 21 19H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Order is load-bearing</span>
+          <p>Identity is established before message integrity, binding, and decryption; traffic
+          management runs last in the <code>PreFlow</code> so quota is only spent on requests that
+          have already passed authentication and admission control. Re-ordering these steps weakens
+          the FAPI guarantees.</p>
+        </div>
+      </div>
+
+      <h2>What is inside</h2>
+      <p>Ten shared flows make up the chassis. Each is documented on its own page — policy table, step
+      order with conditions, FAPI relevance, and the production knobs to change.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Shared flow</th><th>Stage</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><a href="sf-preflight.html">sf-preflight</a></td>
+            <td>PreFlow</td>
+            <td>Spike arrest plus method, content-type, and payload-size guards (405 / 415 / 413).</td>
+          </tr>
+          <tr>
+            <td><a href="sf-fapi-headers.html">sf-fapi-headers</a></td>
+            <td>PreFlow</td>
+            <td>Validate, echo, or mint <code>x-fapi-interaction-id</code>; validate customer IP.</td>
+          </tr>
+          <tr>
+            <td><a href="sf-jwt-validation.html">sf-jwt-validation</a></td>
+            <td>PreFlow</td>
+            <td>OAuth2 access-token verification via JWKS; scope enforcement (401 / 403).</td>
+          </tr>
+          <tr>
+            <td><a href="sf-jws-validation.html">sf-jws-validation</a></td>
+            <td>PreFlow · conditional</td>
+            <td>Detached JWS request-signature verification (PS256) for message integrity.</td>
+          </tr>
+          <tr>
+            <td><a href="sf-jwe.html">sf-jwe</a></td>
+            <td>PreFlow · conditional</td>
+            <td>JWE payload decryption (jsrsasign) for JOSE/JWE content types.</td>
+          </tr>
+          <tr>
+            <td><a href="sf-mtls-binding.html">sf-mtls-binding</a></td>
+            <td>PreFlow · conditional</td>
+            <td>Certificate-bound token check — <code>cnf x5t#S256</code> sender constraint.</td>
+          </tr>
+          <tr>
+            <td><a href="sf-security-headers.html">sf-security-headers</a></td>
+            <td>PostFlow</td>
+            <td>HSTS, CSP, <code>nosniff</code>, and cache-control response headers.</td>
+          </tr>
+          <tr>
+            <td><a href="sf-traffic-management.html">sf-traffic-management</a></td>
+            <td>PreFlow</td>
+            <td>Per-client spike arrest and quota to protect the backend.</td>
+          </tr>
+          <tr>
+            <td><a href="sf-error-handling.html">sf-error-handling</a></td>
+            <td>Fault</td>
+            <td>Map faults to OB / RFC&nbsp;7807 error bodies with PII masking.</td>
+          </tr>
+          <tr>
+            <td><a href="sf-logging.html">sf-logging</a></td>
+            <td>PostFlow</td>
+            <td>Structured Cloud Logging and analytics context per interaction.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Why FAPI, why shared flows</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h4>Why FAPI 1.0 Advanced</h4>
+          <p>UK Open Banking mandates the Financial-grade API profile. Beyond bearer tokens it
+          requires <strong>sender-constrained</strong> tokens (so a stolen token is useless without
+          the bound client certificate), <strong>detached request signatures</strong> for
+          non-repudiation, and <strong>standardised error semantics</strong>. The chassis implements each
+          of these as a discrete, testable control rather than as scattered proxy logic.</p>
+        </div>
+        <div class="card">
+          <h4>Why shared flows</h4>
+          <p>Security written once is security audited once. Versioned shared flows give a single
+          source of truth for every control, uniform enforcement across proxies, and a clean upgrade
+          path — harden the chassis and every proxy inherits it. New APIs onboard by composing
+          callouts, not by copy-pasting policy.</p>
+        </div>
+      </div>
+
+      <p class="muted">Continue to <a href="architecture.html">Architecture</a> for the repository
+      layout and deployment model, or jump to the <a href="security-model.html">FAPI Security
+      Model</a> for how the cryptographic controls fit together.</p>
+
+      <p class="note">All names, conditions, and step order on this page reflect the artifacts in the
+      private <code>apigee-bank-chassis</code> repository as built.</p>
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

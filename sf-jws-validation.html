@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>sf-jws-validation — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html" class="active">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <p class="eyebrow">Shared flow · FAPI message integrity</p>
+      <h1>sf-jws-validation</h1>
+
+      <div class="answer">
+        <p><code>sf-jws-validation</code> proves the request body was signed by the calling TPP and arrived unaltered — FAPI message integrity. It runs a single policy, <code>VJWS-Request</code> (<code>VerifyJWS</code>), which verifies the <strong>detached JWS</strong> carried in the <code>x-jws-signature</code> header against the request body supplied as <code>DetachedContent</code>. The signature must be <strong>PS256</strong> (RSASSA-PSS), the signing key is resolved from a JWKS by the <code>kid</code> in the JWS protected header, and the four UK Open Banking critical headers (<code>b64</code>, <code>iat</code>, <code>iss</code>, <code>tan</code>) are enforced. The step is <em>conditional</em> on the signature header being present, so the demo GET (no body, no signature) still flows; any signature that <em>is</em> presented is fully verified.</p>
+      </div>
+
+      <p class="lead">This flow is the payload-integrity gate of the FAPI 1.0 Advanced chassis. It runs after the authorization gate (<code>sf-jwt-validation</code>) and answers one question: <em>was this exact request body signed by the holder of the registered signing key, with the Open Banking critical headers intact?</em></p>
+
+      <h2>Policies in this bundle</h2>
+      <p>One policy, declared in <code>sf-jws-validation.xml</code> and sequenced by <code>sharedflows/default.xml</code>.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>VJWS-Request</td>
+            <td>VerifyJWS</td>
+            <td>Verify the detached JWS in <code>x-jws-signature</code> (PS256, <code>b64=false</code> per RFC 7797) against the request body, resolving the public key from the signing JWKS and enforcing the OB critical headers.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Step order &amp; conditions</h2>
+      <p>One conditional step. The condition is exactly what <code>sharedflows/default.xml</code> declares.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>VJWS-Request — condition</h4>
+          <p>Runs only when <code>(request.header.x-jws-signature != null)</code>. If the header is present, the detached signature is fully verified; if it is absent, the step is skipped so a bodyless demo GET passes through. On a verification failure, <code>VerifyJWS</code> raises Apigee's built-in JWS fault, which <code>sf-error-handling</code> surfaces as the error response.</p>
+        </div>
+      </div>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 4.5 21 19.5H3L12 4.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M12 10v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="16.75" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Presence is not enforced here — by design</span>
+          <p>The step is gated on <code>x-jws-signature != null</code> purely so the read-only demo path (a GET with no body) works without a signature. This means an attacker cannot bypass verification by sending a <em>bad</em> signature — but they could omit the header entirely. Production write/payment endpoints <strong>MUST enforce presence</strong> and reject any request missing <code>x-jws-signature</code>, per the OB Read/Write spec. See <em>Configuration knobs</em> below for how.</p>
+        </div>
+      </div>
+
+      <h2>What "detached JWS" means here</h2>
+      <p>A normal JWS is <code>header.payload.signature</code> — three base64url segments. A <strong>detached</strong> JWS omits the middle segment, transmitting <code>header..signature</code>; the payload is sent separately (here, as the request body). The verifier reattaches the body before checking the signature, which is exactly what <code>&lt;DetachedContent&gt;request.content&lt;/DetachedContent&gt;</code> does.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4>x-jws-signature</h4>
+          <p>Carries the protected header and the signature only — <code>eyJ...header...&lt;empty&gt;.&lt;sig&gt;</code>. The empty middle is the detached payload.</p>
+        </div>
+        <div class="card">
+          <h4>request.content</h4>
+          <p>The raw request body. Supplied as <code>DetachedContent</code>, it is the payload that the signature is verified against — byte for byte.</p>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M12 11v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="7.75" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">b64=false (RFC 7797) — why the body is signed verbatim</span>
+          <p>UK Open Banking signs with the <strong>unencoded-payload option</strong>: the <code>b64</code> protected-header parameter is <code>false</code>, so the body is <em>not</em> base64url-encoded before signing. The body bytes on the wire are the signed bytes. <code>b64</code> is therefore listed as a critical header — a verifier that does not understand it must reject the JWS rather than silently treat the payload as encoded.</p>
+        </div>
+      </div>
+
+      <h2>The policy, as written</h2>
+      <p>The whole flow is this one <code>VerifyJWS</code>. The algorithm is pinned, the source and detached content are wired to the request, the key comes from a JWKS, and the OB critical headers are declared so they are not rejected as unrecognised.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/VJWS-Request.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;VerifyJWS</span> <span class="tok-key">name</span>=<span class="tok-str">"VJWS-Request"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;DisplayName&gt;</span>VJWS-Request<span class="tok-tag">&lt;/DisplayName&gt;</span>
+  <span class="tok-tag">&lt;Algorithm&gt;</span>PS256<span class="tok-tag">&lt;/Algorithm&gt;</span>
+  <span class="tok-tag">&lt;Source&gt;</span>request.header.x-jws-signature<span class="tok-tag">&lt;/Source&gt;</span>
+  <span class="tok-tag">&lt;DetachedContent&gt;</span>request.content<span class="tok-tag">&lt;/DetachedContent&gt;</span>
+  <span class="tok-tag">&lt;PublicKey&gt;</span>
+    <span class="tok-tag">&lt;JWKS</span> <span class="tok-key">uri</span>=<span class="tok-str">"https://auth.example.com/.well-known/signing-jwks.json"</span><span class="tok-tag">/&gt;</span>
+  <span class="tok-tag">&lt;/PublicKey&gt;</span>
+  <span class="tok-tag">&lt;CriticalHeaders&gt;</span>b64,http://openbanking.org.uk/iat,http://openbanking.org.uk/iss,http://openbanking.org.uk/tan<span class="tok-tag">&lt;/CriticalHeaders&gt;</span>
+<span class="tok-tag">&lt;/VerifyJWS&gt;</span></code></pre>
+      </div>
+      <p class="muted">There is no inline <code>&lt;Id&gt;</code> for the key: the <code>kid</code> in the JWS protected header selects the matching key from the JWKS, so the TPP's signing keys can rotate without redeploying the proxy.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">sharedflows/default.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;SharedFlow</span> <span class="tok-key">name</span>=<span class="tok-str">"default"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;Step&gt;</span>
+    <span class="tok-tag">&lt;Name&gt;</span>VJWS-Request<span class="tok-tag">&lt;/Name&gt;</span>
+    <span class="tok-tag">&lt;Condition&gt;</span>(request.header.x-jws-signature != null)<span class="tok-tag">&lt;/Condition&gt;</span>
+  <span class="tok-tag">&lt;/Step&gt;</span>
+<span class="tok-tag">&lt;/SharedFlow&gt;</span></code></pre>
+      </div>
+
+      <h2>The four critical headers</h2>
+      <p>The <code>crit</code> list in the JWS protected header names parameters the signer considers mandatory. <code>VerifyJWS</code> must be told which of these it understands via <code>&lt;CriticalHeaders&gt;</code>; any unlisted <code>crit</code> entry causes the verification to fail. These four are the UK OB Read/Write set.</p>
+      <table class="policy">
+        <thead>
+          <tr><th>Header</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>b64</td><td>RFC 7797 unencoded-payload flag — <code>false</code> for OB, signalling the body is signed verbatim.</td></tr>
+          <tr><td>http://openbanking.org.uk/iat</td><td>Issued-at time of the signature (epoch seconds), bounding signature freshness.</td></tr>
+          <tr><td>http://openbanking.org.uk/iss</td><td>Issuer of the signature — the signing party's identifier.</td></tr>
+          <tr><td>http://openbanking.org.uk/tan</td><td>Trust Anchor used to source the signing certificate (e.g. <code>openbanking.org.uk</code>).</td></tr>
+        </tbody>
+      </table>
+
+      <h2>FAPI relevance</h2>
+      <p>This flow implements the resource-server side of FAPI 1.0 Advanced request-object message integrity.</p>
+      <div class="pillrow">
+        <span class="layer-chip">Detached JWS</span>
+        <span class="layer-chip">PS256 only</span>
+        <span class="layer-chip">b64=false (RFC 7797)</span>
+        <span class="layer-chip">JWKS key rotation</span>
+        <span class="layer-chip">OB critical headers</span>
+      </div>
+      <ul>
+        <li><strong>Non-repudiation &amp; integrity.</strong> The body is bound to the TPP's signing key; any in-transit modification or a forged body fails verification. mTLS protects the channel — this protects the message.</li>
+        <li><strong>Algorithm pinning.</strong> <code>&lt;Algorithm&gt;PS256&lt;/Algorithm&gt;</code> accepts only RSASSA-PSS. There is no <code>none</code> path and no HMAC, blocking algorithm-confusion downgrade attacks.</li>
+        <li><strong>Critical-header enforcement.</strong> Declaring the OB <code>crit</code> set means a signature that omits or alters <code>b64</code>/<code>iat</code>/<code>iss</code>/<code>tan</code> is rejected rather than silently accepted.</li>
+        <li><strong>Key agility.</strong> Verification is offline against the signing JWKS; the <code>kid</code> selects the key, so signer key rotation needs no proxy change.</li>
+      </ul>
+
+      <h2>Configuration knobs</h2>
+      <p>These are the placeholder values to change before production. The policy itself lives in <code>VJWS-Request.xml</code>; the presence rule lives in <code>sharedflows/default.xml</code>.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4>Signing JWKS URI</h4>
+          <p><code>https://auth.example.com/.well-known/signing-jwks.json</code> is a non-resolvable placeholder. Point it at the TPP / OB signing key set for each environment — KVM-backed in production. Note this is the <em>signing</em> JWKS, distinct from the access-token JWKS in <code>sf-jwt-validation</code>.</p>
+        </div>
+        <div class="card">
+          <h4>Enforce signature presence</h4>
+          <p>For write/payment proxies, drop the <code>x-jws-signature != null</code> condition (run <code>VJWS-Request</code> unconditionally) or add a <code>RaiseFault</code> that returns <span class="chip errst">400</span> <code>UK.OBIE.Signature.Missing</code> when the header is absent. Do not ship the demo's conditional gate on a payment endpoint.</p>
+        </div>
+        <div class="card">
+          <h4>Algorithm</h4>
+          <p><code>&lt;Algorithm&gt;PS256&lt;/Algorithm&gt;</code> is correct for UK OB and should stay pinned. Do not widen it to a list; one algorithm per directory keeps downgrade attacks off the table.</p>
+        </div>
+        <div class="card">
+          <h4>Critical headers</h4>
+          <p>The <code>&lt;CriticalHeaders&gt;</code> set must match the <code>crit</code> values your signers actually emit. If your tenant adds OB header parameters, list them here too — an unlisted <code>crit</code> entry fails verification.</p>
+        </div>
+      </div>
+
+      <div class="callout danger">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M12 7.5v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="16" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Do not ship the example JWKS URI — or the conditional gate on writes</span>
+          <p>The <code>auth.example.com</code> signing JWKS is a placeholder; left unchanged, every presented signature fails the JWKS fetch. And because the step is conditioned on header presence, a <em>missing</em> signature is silently allowed — acceptable for the read-only demo, unacceptable for any payment or write endpoint. Before production: replace the JWKS URI and enforce signature presence.</p>
+        </div>
+      </div>
+
+      <h2>Where this fits</h2>
+      <p>In the reference proxy this shared flow is invoked from the request <code>PreFlow</code> after the authorization gate and before payload confidentiality (<code>sf-jwe</code>). The cumulative order is:</p>
+      <div class="pillrow">
+        <span class="chip plain">sf-mtls-binding</span>
+        <span class="chip plain">sf-preflight</span>
+        <span class="chip plain">sf-fapi-headers</span>
+        <span class="chip plain">sf-jwt-validation</span>
+        <span class="chip gold">sf-jws-validation</span>
+        <span class="chip plain">sf-jwe</span>
+      </div>
+      <p class="note">By the time <code>sf-jws-validation</code> completes, a signed request is known to carry an intact, PS256-signed body from the registered signing key with valid OB critical headers — the integrity precondition the backend relies on.</p>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

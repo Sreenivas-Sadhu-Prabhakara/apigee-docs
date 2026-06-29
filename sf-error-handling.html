@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>sf-error-handling — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html" class="active">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <span class="eyebrow">Shared flow</span>
+      <h1>sf-error-handling</h1>
+
+      <div class="answer">
+        <p><code>sf-error-handling</code> is the proxy's single fault exit. It is invoked from the <code>DefaultFaultRule</code> (via the <code>FC-ErrorHandling</code> FlowCallout) whenever any policy raises a fault, and it turns whatever broke internally into one standardized UK Open Banking Read/Write error body. Two policies do the work: <code>JS-MapError</code> runs <code>errorMap.js</code> to classify the fault — first by Apigee <code>fault.name</code>, then by originating HTTP status — into a <code>UK.OBIE.*</code> code, an HTTP status, and a non-leaking message; <code>AM-ErrorResponse</code> serialises those into the OBIE JSON shape <code>{ Code, Id, Message, Errors[] }</code>. A hard rule guarantees that for any status <span class="chip errst">≥&nbsp;500</span> the caller only ever sees <code>UK.OBIE.UnexpectedError</code> and a fixed generic message — internal detail never leaks.</p>
+      </div>
+
+      <p class="lead">In a FAPI 1.0 Advanced chassis the fault path is part of the security surface. A stack trace, a backend hostname, or a policy name echoed in a 500 body is an information-disclosure finding. This flow exists so that every failure — from every layer — collapses into one predictable, machine-parseable contract that a TPP can handle, while server-side detail stays server-side.</p>
+
+      <h2>How it is invoked</h2>
+      <p>The bundle is not mounted in a PreFlow. It is wired into the proxy's <code>DefaultFaultRule</code>, so it runs only when a fault is raised anywhere in the request, response, or target flow. The proxy reaches it through a one-line FlowCallout.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">apiproxy/proxies/default.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">DefaultFaultRule</span> <span class="tok-key">name</span>=<span class="tok-str">"default-fault"</span>&gt;
+  &lt;<span class="tok-tag">Step</span>&gt;
+    &lt;<span class="tok-tag">Name</span>&gt;FC-ErrorHandling&lt;/<span class="tok-tag">Name</span>&gt;
+  &lt;/<span class="tok-tag">Step</span>&gt;
+&lt;/<span class="tok-tag">DefaultFaultRule</span>&gt;</code></pre>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">apiproxy/policies/FC-ErrorHandling.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">FlowCallout</span> <span class="tok-key">name</span>=<span class="tok-str">"FC-ErrorHandling"</span>&gt;
+  &lt;<span class="tok-tag">DisplayName</span>&gt;FC-ErrorHandling&lt;/<span class="tok-tag">DisplayName</span>&gt;
+  &lt;<span class="tok-tag">SharedFlowBundle</span>&gt;sf-error-handling&lt;/<span class="tok-tag">SharedFlowBundle</span>&gt;
+&lt;/<span class="tok-tag">FlowCallout</span>&gt;</code></pre>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v5M12 7.5h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">This is the catch-all, not the only error path</span>
+          <p>The preflight guards (<a href="sf-preflight.html">sf-preflight</a>) build their own OBIE bodies inline with <code>RaiseFault</code> and short-circuit before this flow. <code>sf-error-handling</code> is the safety net for everything else — token, signature, schema, quota, and target faults — so that any fault that bubbles up to the <code>DefaultFaultRule</code> still exits in the OBIE shape.</p>
+        </div>
+      </div>
+
+      <h2>Policies</h2>
+      <p>Two policies, declared in <code>sf-error-handling.xml</code> and sequenced by <code>sharedflows/default.xml</code>. The bundle ships at <code>ConfigurationVersion 4.0</code> and carries one resource, <code>jsc://errorMap.js</code>.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>JS-MapError</td>
+            <td>Javascript</td>
+            <td>Runs <code>errorMap.js</code>. Reads <code>fault.name</code>, <code>error.status.code</code>, and <code>message.status.code</code>; classifies into an HTTP status, a <code>UK.OBIE.*</code> code, and a safe message; publishes <code>ob.http.status</code>, <code>ob.error.code</code>, <code>ob.error.message</code>. <code>timeLimit=5000</code>, <code>continueOnError=true</code>.</td>
+          </tr>
+          <tr>
+            <td>AM-ErrorResponse</td>
+            <td>AssignMessage</td>
+            <td>Overwrites the response (<code>AssignTo type="response"</code>, <code>createNew=false</code>): sets the HTTP status from <code>ob.http.status</code> and writes the OBIE JSON body <code>{ Code, Id, Message, Errors[] }</code>. <code>IgnoreUnresolvedVariables=true</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Step order and conditions</h2>
+      <p>Two steps, no conditions — both always run, in order. Classification must precede serialisation because <code>AM-ErrorResponse</code> reads the three <code>ob.*</code> variables that <code>JS-MapError</code> sets.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>JS-MapError — unconditional</h4>
+          <p>Executes <code>errorMap.js</code>. Gathers the fault signals, classifies them, and writes <code>ob.http.status</code>, <code>ob.error.code</code>, and <code>ob.error.message</code>. <code>continueOnError=true</code> means that even a script error does not derail the fault rule — the policy's own <code>try/catch</code> still publishes a safe 500 first.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>AM-ErrorResponse — unconditional</h4>
+          <p>Reads the three <code>ob.*</code> variables plus <code>fapi.interaction.id</code> and assembles the OBIE error response, replacing whatever partial response the failing flow had produced. With <code>IgnoreUnresolvedVariables=true</code>, a missing interaction id leaves <code>Id</code> empty rather than breaking assembly.</p>
+        </div>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">sharedflows/default.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">SharedFlow</span> <span class="tok-key">name</span>=<span class="tok-str">"default"</span>&gt;
+  &lt;<span class="tok-tag">Step</span>&gt;&lt;<span class="tok-tag">Name</span>&gt;JS-MapError&lt;/<span class="tok-tag">Name</span>&gt;&lt;/<span class="tok-tag">Step</span>&gt;
+  &lt;<span class="tok-tag">Step</span>&gt;&lt;<span class="tok-tag">Name</span>&gt;AM-ErrorResponse&lt;/<span class="tok-tag">Name</span>&gt;&lt;/<span class="tok-tag">Step</span>&gt;
+&lt;/<span class="tok-tag">SharedFlow</span>&gt;</code></pre>
+      </div>
+
+      <h2>Classification: errorMap.js</h2>
+      <p>The script reads three signals and resolves them to a triple. It starts from a safe default and refines in a fixed precedence: <strong>fault name first, originating status code second</strong>.</p>
+
+      <div class="pillrow">
+        <span class="chip plain">in: fault.name</span>
+        <span class="chip plain">in: error.status.code</span>
+        <span class="chip plain">in: message.status.code</span>
+        <span class="chip gold">out: ob.http.status</span>
+        <span class="chip gold">out: ob.error.code</span>
+        <span class="chip gold">out: ob.error.message</span>
+      </div>
+
+      <p>The originating status is <code>firstNonNull(error.status.code, message.status.code)</code> — <code>error.status.code</code> wins, <code>message.status.code</code> is the fallback, and it may be <code>null</code>. The starting default is <span class="chip errst">500</span> / <code>UK.OBIE.UnexpectedError</code> / <em>"An unexpected error occurred"</em>.</p>
+
+      <h3>Pass 1 — by fault name</h3>
+      <p>The fault name is lower-cased and matched by <em>substring</em>, so a single check covers many policy-specific fault names. The branches are evaluated top-down and the first match wins — order matters: the broad <code>invalid</code> 400-branch sits last, so <code>invalidaccesstoken</code> and <code>invalidapikey</code> are caught by the 401-branch above it.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Substring(s) in fault.name</th><th>HTTP</th><th>UK.OBIE code</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>invalidaccesstoken</code>, <code>invalidapikey</code>, <code>expired</code>, <code>jwtfailed</code>, <code>verifyjwt</code>, <code>unauthorized</code>, <code>authentication</code>, <code>keyexpired</code></td>
+            <td><span class="chip errst">401</span></td>
+            <td>UK.OBIE.Unauthorized</td>
+          </tr>
+          <tr>
+            <td><code>quotaviolation</code>, <code>spikearrest</code></td>
+            <td><span class="chip warnst">429</span></td>
+            <td>UK.OBIE.Rate.Limit</td>
+          </tr>
+          <tr>
+            <td><code>insufficient</code>, <code>forbidden</code>, <code>scope</code> <span class="muted">(not quota/spike)</span></td>
+            <td><span class="chip errst">403</span></td>
+            <td>UK.OBIE.Resource.Forbidden</td>
+          </tr>
+          <tr>
+            <td><code>schemavalidation</code>, <code>extractvariable</code>, <code>invalidvariable</code>, <code>jsonpath</code>, <code>jsonthreatprotection</code>, <code>xmlthreatprotection</code>, <code>badrequest</code>, <code>invalid</code></td>
+            <td><span class="chip errst">400</span></td>
+            <td>UK.OBIE.Field.Invalid</td>
+          </tr>
+          <tr>
+            <td><code>notfound</code>, <code>resourcedoesnotexist</code></td>
+            <td><span class="chip errst">404</span></td>
+            <td>UK.OBIE.Resource.NotFound</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v5M12 7.5h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">The 429 / 403 branch is nested</span>
+          <p>The throttling and forbidden cases share one outer branch matched by <code>insufficient | forbidden | scope | quotaviolation | spikearrest</code>. Inside it, a second test splits <code>quotaviolation</code> / <code>spikearrest</code> off to <span class="chip warnst">429</span> <code>UK.OBIE.Rate.Limit</code>; everything else in the branch becomes <span class="chip errst">403</span> <code>UK.OBIE.Resource.Forbidden</code>.</p>
+        </div>
+      </div>
+
+      <h3>Pass 2 — by status code</h3>
+      <p>This pass runs <em>only</em> when pass&nbsp;1 left the result at the unexpected default <strong>and</strong> a status code is present (<code>errorCode === 'UK.OBIE.UnexpectedError' &amp;&amp; rawStatus !== null</code>). A fault name that already classified is never overridden by the status.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>rawStatus</th><th>UK.OBIE code</th><th>Message</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="chip errst">400</span></td><td>UK.OBIE.Field.Invalid</td><td>A request field is missing or invalid</td></tr>
+          <tr><td><span class="chip errst">401</span></td><td>UK.OBIE.Unauthorized</td><td>The access token is missing, invalid, or expired</td></tr>
+          <tr><td><span class="chip errst">403</span></td><td>UK.OBIE.Resource.Forbidden</td><td>The request is not permitted</td></tr>
+          <tr><td><span class="chip errst">404</span></td><td>UK.OBIE.Resource.NotFound</td><td>The requested resource was not found</td></tr>
+          <tr><td><span class="chip errst">405</span></td><td>UK.OBIE.Field.Invalid</td><td>The HTTP method is not supported for this resource</td></tr>
+          <tr><td><span class="chip errst">406</span></td><td>UK.OBIE.Header.Invalid</td><td>The requested media type is not supported</td></tr>
+          <tr><td><span class="chip errst">415</span></td><td>UK.OBIE.Header.Invalid</td><td>The supplied media type is not supported</td></tr>
+          <tr><td><span class="chip warnst">429</span></td><td>UK.OBIE.Rate.Limit</td><td>The request has been rate limited</td></tr>
+          <tr><td><span class="chip errst">4xx</span> <span class="muted">other</span></td><td>UK.OBIE.Field.Invalid</td><td>The request could not be processed <span class="muted">(status passed through)</span></td></tr>
+          <tr><td><span class="chip errst">5xx</span></td><td>UK.OBIE.UnexpectedError</td><td>An unexpected error occurred <span class="muted">(status passed through)</span></td></tr>
+        </tbody>
+      </table>
+
+      <h2>The 5xx leak-masking</h2>
+      <p>Suppression of internal detail on server errors is defended in three independent layers — any one of them alone is sufficient.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>Layer 1 — generic by construction</h4>
+          <p>The unexpected default <em>is</em> the 5xx case: <code>500</code> / <code>UK.OBIE.UnexpectedError</code> / <em>"An unexpected error occurred"</em>. An unclassifiable fault never falls through to anything more specific.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Layer 2 — hard safety net</h4>
+          <p>After both classification passes, an unconditional final guard re-asserts the generic code and message for <em>any</em> resolved status <code>&gt;= 500</code>, regardless of how it was reached. A 5xx can never carry a specific code or message.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Layer 3 — catch-all fallback</h4>
+          <p>The entire body is wrapped in <code>try/catch</code>. If the script itself throws, the <code>catch</code> publishes a safe <code>500</code> / <code>UK.OBIE.UnexpectedError</code> / generic message, so the fault rule still emits a well-formed OBIE error.</p>
+        </div>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/errorMap.js</span><span class="code-lang">JavaScript</span></div>
+<pre><code><span class="tok-cmt">// --- Hard safety net: never leak internals on 5xx --------------------</span>
+<span class="tok-key">if</span> (httpStatus &gt;= 500) {
+  errorCode = <span class="tok-str">'UK.OBIE.UnexpectedError'</span>;
+  errorMessage = GENERIC_5XX_MESSAGE;
+}
+
+context.setVariable(<span class="tok-str">'ob.http.status'</span>, httpStatus);
+context.setVariable(<span class="tok-str">'ob.error.code'</span>, errorCode);
+context.setVariable(<span class="tok-str">'ob.error.message'</span>, errorMessage);
+
+} <span class="tok-key">catch</span> (e) {
+  <span class="tok-cmt">// Absolute fallback: safe, generic, well-formed.</span>
+  context.setVariable(<span class="tok-str">'ob.http.status'</span>, 500);
+  context.setVariable(<span class="tok-str">'ob.error.code'</span>, <span class="tok-str">'UK.OBIE.UnexpectedError'</span>);
+  context.setVariable(<span class="tok-str">'ob.error.message'</span>, GENERIC_5XX_MESSAGE);
+}</code></pre>
+      </div>
+
+      <div class="callout danger">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4.5M12 16h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Never widen the 5xx message</span>
+          <p>The generic message and the hard safety net are the whole point of this flow. Do not be tempted to surface <code>error.message</code>, <code>fault.cause</code>, or a target body on a 5xx for "easier debugging" — that is an information-disclosure regression. Carry the detail in <a href="sf-logging.html">sf-logging</a> instead, correlated by the same interaction id.</p>
+        </div>
+      </div>
+
+      <h2>The OB error JSON shape</h2>
+      <p><code>AM-ErrorResponse</code> sets the HTTP status from <code>ob.http.status</code> and writes the UK Open Banking Read/Write error body. The interaction id surfaces as <code>Id</code>; the message and OBIE code come from the script.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/AM-ErrorResponse.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">AssignMessage</span> <span class="tok-key">name</span>=<span class="tok-str">"AM-ErrorResponse"</span> <span class="tok-key">continueOnError</span>=<span class="tok-str">"false"</span> <span class="tok-key">enabled</span>=<span class="tok-str">"true"</span>&gt;
+  &lt;<span class="tok-tag">IgnoreUnresolvedVariables</span>&gt;true&lt;/<span class="tok-tag">IgnoreUnresolvedVariables</span>&gt;
+  &lt;<span class="tok-tag">AssignTo</span> <span class="tok-key">createNew</span>=<span class="tok-str">"false"</span> <span class="tok-key">type</span>=<span class="tok-str">"response"</span>/&gt;
+  &lt;<span class="tok-tag">Set</span>&gt;
+    &lt;<span class="tok-tag">StatusCode</span>&gt;{ob.http.status}&lt;/<span class="tok-tag">StatusCode</span>&gt;
+    &lt;<span class="tok-tag">Payload</span> <span class="tok-key">contentType</span>=<span class="tok-str">"application/json"</span>&gt;{
+  "Code": "{ob.http.status}",
+  "Id": "{fapi.interaction.id}",
+  "Message": "{ob.error.message}",
+  "Errors": [
+    {
+      "ErrorCode": "{ob.error.code}",
+      "Message": "{ob.error.message}"
+    }
+  ]
+}&lt;/<span class="tok-tag">Payload</span>&gt;
+    &lt;<span class="tok-tag">Headers</span>&gt;
+      &lt;<span class="tok-tag">Header</span> <span class="tok-key">name</span>=<span class="tok-str">"Content-Type"</span>&gt;application/json&lt;/<span class="tok-tag">Header</span>&gt;
+    &lt;/<span class="tok-tag">Set</span>&gt;
+  &lt;/<span class="tok-tag">Set</span>&gt;
+&lt;/<span class="tok-tag">AssignMessage</span>&gt;</code></pre>
+      </div>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Field</th><th>Source</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Code</td><td><code>{ob.http.status}</code></td><td>Top-level code. In this chassis it carries the <em>HTTP status</em> as a string (e.g. <code>"401"</code>) rather than an OBIE category label.</td></tr>
+          <tr><td>Id</td><td><code>{fapi.interaction.id}</code></td><td>The <code>x-fapi-interaction-id</code> for this request, set upstream by <a href="sf-fapi-headers.html">sf-fapi-headers</a>. Lets a TPP correlate the error with its request and with server logs.</td></tr>
+          <tr><td>Message</td><td><code>{ob.error.message}</code></td><td>Human-readable, non-leaking message. Generic for 5xx; specific (but still safe) for handled 4xx.</td></tr>
+          <tr><td>Errors[].ErrorCode</td><td><code>{ob.error.code}</code></td><td>The <code>UK.OBIE.*</code> machine code a TPP branches on — e.g. <code>UK.OBIE.Unauthorized</code>, <code>UK.OBIE.Field.Invalid</code>.</td></tr>
+          <tr><td>Errors[].Message</td><td><code>{ob.error.message}</code></td><td>Per-error message; mirrors the top-level <code>Message</code> in this implementation.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4M12 17h.01M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">"Code" carries the HTTP status, not an OBIE category</span>
+          <p>The strict OBIE Read/Write schema expects the top-level <code>Code</code> to be a high-level category string. Here it is populated with <code>{ob.http.status}</code> — the numeric HTTP status as text. The machine-actionable <code>UK.OBIE.*</code> value lives in <code>Errors[].ErrorCode</code>. If you are certifying against a strict OBIE validator, change the <code>Code</code> binding in <code>AM-ErrorResponse</code> to emit a category code (or a fixed <code>"OBIE"</code> banner) rather than the status.</p>
+        </div>
+      </div>
+
+      <h2>FAPI relevance</h2>
+      <p>This flow does no token or crypto work, but it is a FAPI control: the spec's threat model treats verbose errors as an attack aid, and consistent, correlatable errors as an operational requirement for the ASPSP estate.</p>
+
+      <div class="pillrow">
+        <span class="layer-chip">Information-disclosure control</span>
+        <span class="layer-chip">OBIE error contract</span>
+        <span class="layer-chip">Interaction-id correlation</span>
+        <span class="chip teal">Fail-closed</span>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4>No internal leakage on 5xx</h4>
+          <p>Three independent layers force every server error to a fixed generic message and <code>UK.OBIE.UnexpectedError</code>. Backend hostnames, stack traces, and policy names never reach the TPP.</p>
+        </div>
+        <div class="card">
+          <h4>One contract for every fault</h4>
+          <p>Token, signature, schema, quota, and target faults all exit in the same <code>{ Code, Id, Message, Errors[] }</code> shape, so a TPP writes one error handler that works at every rejection point.</p>
+        </div>
+        <div class="card">
+          <h4>Correlatable by design</h4>
+          <p><code>Id</code> echoes <code>x-fapi-interaction-id</code>, tying the client-visible error to the server-side <a href="sf-logging.html">log record</a> for the same request — debuggability without disclosure.</p>
+        </div>
+        <div class="card">
+          <h4>Fail-closed, always well-formed</h4>
+          <p><code>continueOnError</code>, the script <code>try/catch</code>, and <code>IgnoreUnresolvedVariables</code> mean the flow always emits a valid OBIE error — even when the classifier or a context variable misbehaves.</p>
+        </div>
+      </div>
+
+      <h2>Configuration knobs</h2>
+      <p>The placeholders to review per environment before production. All live in the bundle; none require touching the proxy.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Knob</th><th>File · location</th><th>Shipped value &amp; production note</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Generic 5xx message</td>
+            <td>errorMap.js · <code>GENERIC_5XX_MESSAGE</code></td>
+            <td><code>"An unexpected error occurred"</code> — keep it generic. Do not embed identifiers or detail; correlate via <code>Id</code> and logs.</td>
+          </tr>
+          <tr>
+            <td>Fault-name matchers</td>
+            <td>errorMap.js · pass-1 substring branches</td>
+            <td>Substring sets for token / scope / schema / not-found faults. Extend when you add policies whose <code>fault.name</code> values are not already covered, mindful of branch order.</td>
+          </tr>
+          <tr>
+            <td>OBIE codes &amp; messages</td>
+            <td>errorMap.js · <code>errorCode</code> / <code>errorMessage</code> assignments</td>
+            <td><code>UK.OBIE.*</code> codes and 4xx wording. Adjust to your OBIE version or localisation policy; keep all 5xx wording generic.</td>
+          </tr>
+          <tr>
+            <td>Status source order</td>
+            <td>errorMap.js · <code>firstNonNull(errStatus, msgStatus)</code></td>
+            <td><code>error.status.code</code> then <code>message.status.code</code>. Reorder only if your fault conventions populate these differently.</td>
+          </tr>
+          <tr>
+            <td>"Code" semantics</td>
+            <td>AM-ErrorResponse.xml · <code>Code</code> binding</td>
+            <td><code>{ob.http.status}</code> — swap to an OBIE category string if certifying against a strict OBIE Read/Write validator.</td>
+          </tr>
+          <tr>
+            <td>Interaction-id source</td>
+            <td>AM-ErrorResponse.xml · <code>Id</code> binding</td>
+            <td><code>{fapi.interaction.id}</code> — must match the variable set by <a href="sf-fapi-headers.html">sf-fapi-headers</a> upstream, or <code>Id</code> renders empty.</td>
+          </tr>
+          <tr>
+            <td>Script time limit</td>
+            <td>JS-MapError.xml · <code>timeLimit</code></td>
+            <td><code>5000</code> ms — generous for a pure-string classifier; lower it to bound fault-path latency if desired.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <hr>
+      <p class="muted note">Source of truth: <code>shared-flows/sf-error-handling/sharedflowbundle/</code> — <code>sf-error-handling.xml</code>, <code>sharedflows/default.xml</code>, <code>policies/JS-MapError.xml</code>, <code>policies/AM-ErrorResponse.xml</code>, and <code>resources/jsc/errorMap.js</code>; invocation in <code>apiproxy/proxies/default.xml</code> (DefaultFaultRule) via <code>apiproxy/policies/FC-ErrorHandling.xml</code>. This page reflects <code>ConfigurationVersion 4.0</code>.</p>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

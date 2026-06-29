@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>sf-preflight — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html" class="active">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <span class="eyebrow">Shared flow</span>
+      <h1>sf-preflight</h1>
+
+      <div class="answer">
+        <p><code>sf-preflight</code> is the outermost guard in the request path: it spends the cheapest possible work to reject abusive or malformed traffic <em>before</em> any header parsing, token validation, or crypto runs. One <code>SpikeArrest</code> caps per-client rate, then three fail-fast <code>RaiseFault</code> guards short-circuit unsupported HTTP methods (<span class="chip errst">405</span>), unsupported media types (<span class="chip errst">415</span>), and oversized payloads (<span class="chip errst">413</span>). Every rejection is emitted as an OBIE Read/Write JSON error carrying the caller's <code>x-fapi-interaction-id</code>.</p>
+      </div>
+
+      <p class="lead">In a FAPI 1.0 Advanced chassis the expensive layers — mTLS binding, JWS/JWE, JWT validation — must never be the first thing an attacker can force you to execute. <code>sf-preflight</code> exists so that a flood of garbage requests is shed at the door, deterministically and without allocating a parser or a key.</p>
+
+      <h2>Policies</h2>
+      <p>Four policies, declared in <code>sf-preflight.xml</code> and sequenced by <code>sharedflows/default.xml</code>. The bundle ships at <code>ConfigurationVersion 4.0</code> and carries no resources.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>SA-SpikeArrest</td>
+            <td>SpikeArrest</td>
+            <td>Smooth per-client rate cap of <code>30ps</code>, keyed on <code>client.ip</code>, counted cluster-wide. Always runs first; protects every downstream policy and the backend.</td>
+          </tr>
+          <tr>
+            <td>RF-MethodNotAllowed</td>
+            <td>RaiseFault</td>
+            <td>Returns <span class="chip errst">405</span> when <code>request.verb</code> is outside the allowed set (GET, POST, PUT, DELETE, PATCH).</td>
+          </tr>
+          <tr>
+            <td>RF-UnsupportedMediaType</td>
+            <td>RaiseFault</td>
+            <td>Returns <span class="chip errst">415</span> when a body-bearing verb (POST/PUT/PATCH) arrives without an <code>application/json</code> or <code>application/jose</code> content type.</td>
+          </tr>
+          <tr>
+            <td>RF-PayloadTooLarge</td>
+            <td>RaiseFault</td>
+            <td>Returns <span class="chip errst">413</span> when <code>Content-Length</code> exceeds 1 MiB (1&#8239;048&#8239;576 bytes).</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Step order and conditions</h2>
+      <p>Steps are ordered cheapest-first and most-protective-first. The rate limiter is unconditional; the three guards are guarded by Apigee condition expressions so they fire only on the request shapes they own.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>SA-SpikeArrest — unconditional</h4>
+          <p>No <code>&lt;Condition&gt;</code>. Runs on every request as the first step. If the per-IP rate is exceeded the policy itself raises <code>SpikeArrestViolation</code> and the request is rejected before any guard is evaluated.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>RF-MethodNotAllowed — when verb not in allow-list</h4>
+          <p>Condition: <code>!(request.verb = "GET" or … or request.verb = "PATCH")</code>. Any other verb (HEAD, OPTIONS, TRACE, CONNECT, or junk) is rejected with <span class="chip errst">405</span>.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>RF-UnsupportedMediaType — when body verb lacks JSON/JOSE</h4>
+          <p>Condition fires only for POST/PUT/PATCH and only when <code>content-type</code> is neither exactly <code>application/json</code>, nor matches <code>application/json;*</code> (charset params), nor matches <code>application/jose*</code> (covers <code>application/jose+json</code>). Otherwise <span class="chip errst">415</span>.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>RF-PayloadTooLarge — when Content-Length &gt; 1 MiB</h4>
+          <p>Condition: <code>content-length != null</code> <em>and</em> <code>content-length GreaterThan 1048576</code>. Rejects with <span class="chip errst">413</span> before the body is buffered for any downstream parsing or signature check.</p>
+        </div>
+      </div>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4M12 17h.01M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">The size guard has a deliberate gap</span>
+          <p>The 413 condition requires <code>content-length != null</code>. A chunked or streamed request that omits <code>Content-Length</code> will <em>not</em> be caught here — enforce a hard ceiling at the load balancer / message-processor I/O limits as defence in depth. <code>sf-preflight</code> rejects the cheap, declared-oversize case; it is not the only line.</p>
+        </div>
+      </div>
+
+      <h2>The flow definition</h2>
+      <p>This is the complete sequencing in <code>sharedflows/default.xml</code> — the canonical source of step order and conditions.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">sharedflows/default.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">SharedFlow</span> <span class="tok-key">name</span>=<span class="tok-str">"default"</span>&gt;
+  <span class="tok-cmt">&lt;!-- 1. Spike arrest is the outermost guard and always runs, keyed by client IP. --&gt;</span>
+  &lt;<span class="tok-tag">Step</span>&gt;&lt;<span class="tok-tag">Name</span>&gt;SA-SpikeArrest&lt;/<span class="tok-tag">Name</span>&gt;&lt;/<span class="tok-tag">Step</span>&gt;
+
+  <span class="tok-cmt">&lt;!-- 2. Reject any HTTP verb outside the supported set with 405. --&gt;</span>
+  &lt;<span class="tok-tag">Step</span>&gt;
+    &lt;<span class="tok-tag">Name</span>&gt;RF-MethodNotAllowed&lt;/<span class="tok-tag">Name</span>&gt;
+    &lt;<span class="tok-tag">Condition</span>&gt;!(request.verb = "GET" or request.verb = "POST" or request.verb = "PUT" or request.verb = "DELETE" or request.verb = "PATCH")&lt;/<span class="tok-tag">Condition</span>&gt;
+  &lt;/<span class="tok-tag">Step</span>&gt;
+
+  <span class="tok-cmt">&lt;!-- 3. For body-bearing verbs, require a JSON or JOSE content type; otherwise 415. --&gt;</span>
+  &lt;<span class="tok-tag">Step</span>&gt;
+    &lt;<span class="tok-tag">Name</span>&gt;RF-UnsupportedMediaType&lt;/<span class="tok-tag">Name</span>&gt;
+    &lt;<span class="tok-tag">Condition</span>&gt;(request.verb = "POST" or request.verb = "PUT" or request.verb = "PATCH") and (request.header.content-type != "application/json") and (request.header.content-type !~ "application/json;*") and (request.header.content-type !~ "application/jose*")&lt;/<span class="tok-tag">Condition</span>&gt;
+  &lt;/<span class="tok-tag">Step</span>&gt;
+
+  <span class="tok-cmt">&lt;!-- 4. Reject oversized payloads (&gt; 1 MiB) before buffering downstream work. --&gt;</span>
+  &lt;<span class="tok-tag">Step</span>&gt;
+    &lt;<span class="tok-tag">Name</span>&gt;RF-PayloadTooLarge&lt;/<span class="tok-tag">Name</span>&gt;
+    &lt;<span class="tok-tag">Condition</span>&gt;(request.header.content-length != null) and (request.header.content-length GreaterThan 1048576)&lt;/<span class="tok-tag">Condition</span>&gt;
+  &lt;/<span class="tok-tag">Step</span>&gt;
+&lt;/<span class="tok-tag">SharedFlow</span>&gt;</code></pre>
+      </div>
+
+      <h2>The rate limiter</h2>
+      <p>The only stateful policy in the bundle. <code>30ps</code> is enforced as smoothing — roughly one request every 33&#8239;ms per identifier — rather than a 30-in-a-burst window, so a client cannot spend its whole budget in the first millisecond of a second.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/SA-SpikeArrest.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">SpikeArrest</span> <span class="tok-key">name</span>=<span class="tok-str">"SA-SpikeArrest"</span>&gt;
+  &lt;<span class="tok-tag">DisplayName</span>&gt;SA-SpikeArrest&lt;/<span class="tok-tag">DisplayName</span>&gt;
+  <span class="tok-cmt">&lt;!-- Smooth per-client rate cap. 30ps is enforced as ~1 request / 33ms per IP. --&gt;</span>
+  &lt;<span class="tok-tag">Rate</span>&gt;30ps&lt;/<span class="tok-tag">Rate</span>&gt;
+  &lt;<span class="tok-tag">Identifier</span> <span class="tok-key">ref</span>=<span class="tok-str">"client.ip"</span>/&gt;
+  <span class="tok-cmt">&lt;!-- Count across all message processors so the cap holds cluster-wide. --&gt;</span>
+  &lt;<span class="tok-tag">UseEffectiveCount</span>&gt;true&lt;/<span class="tok-tag">UseEffectiveCount</span>&gt;
+&lt;/<span class="tok-tag">SpikeArrest</span>&gt;</code></pre>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v5M12 7.5h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">client.ip is only as true as your edge</span>
+          <p><code>UseEffectiveCount=true</code> makes the cap hold across all message processors instead of per-MP. But behind a load balancer, <code>client.ip</code> can resolve to the LB egress rather than the real caller — collapsing every client into one bucket. In production, terminate the proxy chain correctly and key the identifier on the trusted forwarded client address (e.g. <code>X-Forwarded-For</code>) where applicable.</p>
+        </div>
+      </div>
+
+      <h2>Error responses</h2>
+      <p>All three guards are <code>RaiseFault</code> policies with <code>IgnoreUnresolvedVariables=true</code>, so a missing <code>x-fapi-interaction-id</code> never breaks fault assembly — the <code>Id</code> field is simply left empty. Each fault sets a JSON body in the OBIE Read/Write API error shape: <code>Code</code>, <code>Id</code>, <code>Message</code>, and an <code>Errors[]</code> array with an OBIE <code>ErrorCode</code>.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Status</th><th>OBIE ErrorCode</th><th>Trigger</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>405</td><td>UK.OBIE.UnsupportedHttpMethod</td><td>Verb outside GET/POST/PUT/DELETE/PATCH</td></tr>
+          <tr><td>415</td><td>UK.OBIE.UnsupportedMediaType</td><td>Body verb without application/json or application/jose</td></tr>
+          <tr><td>413</td><td>UK.OBIE.Field.Invalid</td><td>Content-Length over 1 MiB</td></tr>
+        </tbody>
+      </table>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/RF-MethodNotAllowed.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">RaiseFault</span> <span class="tok-key">name</span>=<span class="tok-str">"RF-MethodNotAllowed"</span>&gt;
+  &lt;<span class="tok-tag">DisplayName</span>&gt;RF-MethodNotAllowed&lt;/<span class="tok-tag">DisplayName</span>&gt;
+  &lt;<span class="tok-tag">IgnoreUnresolvedVariables</span>&gt;true&lt;/<span class="tok-tag">IgnoreUnresolvedVariables</span>&gt;
+  &lt;<span class="tok-tag">FaultResponse</span>&gt;
+    &lt;<span class="tok-tag">Set</span>&gt;
+      &lt;<span class="tok-tag">StatusCode</span>&gt;405&lt;/<span class="tok-tag">StatusCode</span>&gt;
+      &lt;<span class="tok-tag">ReasonPhrase</span>&gt;Method Not Allowed&lt;/<span class="tok-tag">ReasonPhrase</span>&gt;
+      &lt;<span class="tok-tag">Payload</span> <span class="tok-key">contentType</span>=<span class="tok-str">"application/json"</span>&gt;{"Code":"405",
+        "Id":"{request.header.x-fapi-interaction-id}",
+        "Message":"Method Not Allowed",
+        "Errors":[{"ErrorCode":"UK.OBIE.UnsupportedHttpMethod",
+        "Message":"The HTTP method is not supported for this resource."}]}&lt;/<span class="tok-tag">Payload</span>&gt;
+    &lt;/<span class="tok-tag">Set</span>&gt;
+  &lt;/<span class="tok-tag">FaultResponse</span>&gt;
+&lt;/<span class="tok-tag">RaiseFault</span>&gt;</code></pre>
+      </div>
+
+      <h2>FAPI relevance</h2>
+      <p>This flow is not a FAPI <em>protocol</em> control in itself — it does no token or signature work. Its job is to make the FAPI layers that follow safe, cheap, and predictable.</p>
+
+      <div class="pillrow">
+        <span class="layer-chip">Defence in depth</span>
+        <span class="layer-chip">Attack-surface reduction</span>
+        <span class="layer-chip">Availability</span>
+        <span class="chip teal">JOSE-aware</span>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4>Fail fast, before crypto</h4>
+          <p>A request that will be rejected anyway is rejected here — before <code>sf-mtls-binding</code>, <code>sf-jws-validation</code>, or <code>sf-jwe</code> spend CPU on certificates and keys. That keeps the expensive cryptographic path off the abuse hot-loop.</p>
+        </div>
+        <div class="card">
+          <h4>JOSE content types are first-class</h4>
+          <p>FAPI request signing and encryption travel as <code>application/jose</code> / <code>application/jose+json</code>. The 415 guard explicitly allows them so signed and encrypted request objects pass preflight while plain text or form bodies are turned away.</p>
+        </div>
+        <div class="card">
+          <h4>Bounded resource use</h4>
+          <p>The spike cap and the 1 MiB payload ceiling bound how much an unauthenticated caller can cost you — protecting availability for the ASPSP estate, an explicit FAPI operational concern.</p>
+        </div>
+        <div class="card">
+          <h4>Consistent OBIE errors from byte zero</h4>
+          <p>Even the earliest rejections speak the OBIE error contract and echo <code>x-fapi-interaction-id</code>, so TPP-side correlation and error handling work identically across every rejection point.</p>
+        </div>
+      </div>
+
+      <h2>Configuration knobs</h2>
+      <p>The values below are the placeholders to review per environment before production. None require code changes beyond the bundle XML.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Knob</th><th>File · element</th><th>Shipped value &amp; production note</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Rate cap</td>
+            <td>SA-SpikeArrest.xml · &lt;Rate&gt;</td>
+            <td><code>30ps</code> — size to your per-client SLA. Use <code>ps</code> for sub-second smoothing; <code>pm</code> allows longer bursts.</td>
+          </tr>
+          <tr>
+            <td>Rate identifier</td>
+            <td>SA-SpikeArrest.xml · &lt;Identifier ref&gt;</td>
+            <td><code>client.ip</code> — switch to a trusted forwarded address behind an LB, or to an app/key identifier for per-TPP fairness.</td>
+          </tr>
+          <tr>
+            <td>Cluster counting</td>
+            <td>SA-SpikeArrest.xml · &lt;UseEffectiveCount&gt;</td>
+            <td><code>true</code> — keep on for a global cap; set <code>false</code> only if you intend a per-MP limit.</td>
+          </tr>
+          <tr>
+            <td>Allowed verbs</td>
+            <td>default.xml · RF-MethodNotAllowed &lt;Condition&gt;</td>
+            <td>GET/POST/PUT/DELETE/PATCH — trim to only the verbs a given proxy actually serves.</td>
+          </tr>
+          <tr>
+            <td>Allowed media types</td>
+            <td>default.xml · RF-UnsupportedMediaType &lt;Condition&gt;</td>
+            <td><code>application/json</code> + <code>application/jose*</code> — extend only if a downstream genuinely needs another type.</td>
+          </tr>
+          <tr>
+            <td>Max payload</td>
+            <td>default.xml · RF-PayloadTooLarge &lt;Condition&gt;</td>
+            <td><code>1048576</code> (1 MiB) — lower for read-heavy APIs; pair with LB-level limits for chunked requests.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout danger">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4.5M12 16h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Place this flow first, every time</span>
+          <p><code>sf-preflight</code> only delivers its guarantees if it is the <em>first</em> shared flow in the proxy PreFlow, ahead of header, mTLS, and JWS/JWE flows. Mount it later and you have already paid for the work it exists to avoid. See the <a href="reference-proxy.html">reference proxy</a> for the canonical PreFlow ordering.</p>
+        </div>
+      </div>
+
+      <hr>
+      <p class="muted note">Source of truth: <code>shared-flows/sf-preflight/sharedflowbundle/</code> — <code>sf-preflight.xml</code>, <code>sharedflows/default.xml</code>, and the four policy files under <code>policies/</code>. This page reflects <code>ConfigurationVersion 4.0</code>.</p>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

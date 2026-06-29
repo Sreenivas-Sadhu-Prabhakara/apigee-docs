@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>sf-jwe — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html" class="active">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <p class="eyebrow">Shared flow · Payload confidentiality</p>
+      <h1>sf-jwe</h1>
+
+      <div class="answer">
+        <p><code>sf-jwe</code> provides JOSE payload encryption for the chassis: it <strong>decrypts</strong> an inbound request body and can <strong>encrypt</strong> an outbound response body. Both directions are a single JavaScript policy that runs one shared script, <code>jwe.js</code>, on top of the bundled <code>jsrsasign</code> library (<code>KJUR.jose.JWE</code>). The crypto profile is fixed to the FAPI / UK Open Banking shape — <strong>RSA-OAEP-256</strong> key management and <strong>A256GCM</strong> content encryption — and the decrypt call passes an algorithm allow-list to block downgrade. The flow is additive and self-gating: only <code>JS-DecryptJWE</code> is stepped, only when the request <code>Content-Type</code> is a JOSE media type, and the script itself re-checks that the body is a 5-segment compact JWE before touching it. Keys come from a KVM (<code>private.jwe.key</code> / <code>public.jwe.key</code>); the in-file PEMs are non-functional placeholders.</p>
+      </div>
+
+      <p class="lead">This flow is the message-confidentiality layer. mTLS protects data in transit hop-by-hop; <code>sf-jwe</code> protects the <em>payload itself</em> end-to-end, so a sensitive request or response body stays ciphertext through any intermediary. It assumes the request has already been authenticated and integrity-checked by the flows ahead of it.</p>
+
+      <h2>Policies in this bundle</h2>
+      <p>Two policies, both <code>Javascript</code>, declared in <code>sf-jwe.xml</code>. They are deliberately identical except for one property — <code>jwe.mode</code> — which selects the direction inside the shared script.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>JS-DecryptJWE</td>
+            <td>Javascript</td>
+            <td>Runs <code>jwe.js</code> with <code>jwe.mode = "decrypt"</code>. Replaces a compact-JWE <code>request.content</code> with its plaintext. Stepped in <code>default.xml</code> under a content-type condition.</td>
+          </tr>
+          <tr>
+            <td>JS-EncryptJWE</td>
+            <td>Javascript</td>
+            <td>Runs <code>jwe.js</code> with <code>jwe.mode = "encrypt"</code>. Replaces <code>response.content</code> with a compact JWE. Defined but intentionally <em>not</em> stepped — attach it on the response flow of a consuming proxy.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Both policies carry <code>timeLimit="5000"</code> and <code>continueOnError="false"</code>, and both pull in two resources:</p>
+      <div class="pillrow">
+        <span class="chip teal">jsc://jwe.js</span>
+        <span class="chip plain">jsc://jsrsasign-all-min.js</span>
+      </div>
+      <p class="muted"><code>jsrsasign-all-min.js</code> (~342&nbsp;KB) is referenced as an <code>&lt;IncludeURL&gt;</code> so its globals (<code>KJUR</code>, <code>KEYUTIL</code>) are in scope when <code>jwe.js</code> — the <code>&lt;ResourceURL&gt;</code> — executes.</p>
+
+      <h2>Step order &amp; conditions</h2>
+      <p><code>sharedflows/default.xml</code> steps exactly one policy. The encrypt policy is shipped but left unstepped on purpose.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>JS-DecryptJWE — conditional on JOSE media type</h4>
+          <p>Stepped with the condition <code>(request.header.content-type ~ "application/jose*") or (request.header.content-type ~ "application/jwe*")</code>. A plain <code>application/json</code> request never enters this policy, so non-encrypted traffic is untouched and pays no crypto cost.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Inside jwe.js — second guard</h4>
+          <p>Even when the condition matches, the script re-validates that <code>request.content</code> is a compact JWE (exactly five dot-separated segments). If not, it sets <code>jwe.decrypted = false</code> and returns without modifying the body. The media-type condition and the structural guard are deliberately belt-and-braces.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>JS-EncryptJWE — not stepped here</h4>
+          <p>Response encryption is opt-in per proxy. There is no <code>&lt;Step&gt;</code> for it in <code>default.xml</code>; a consuming proxy attaches <code>JS-EncryptJWE</code> on its response flow (typically conditioned on the client's <code>Accept</code> header) when JWE responses are required.</p>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M12 11v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="7.75" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">One script, two policies</span>
+          <p>There is no separate decrypt and encrypt source. <code>jwe.js</code> holds both code paths; the policy <code>&lt;Property name="jwe.mode"&gt;</code> chooses which one runs. This keeps the key-handling, algorithm allow-list, and error contract identical across directions.</p>
+        </div>
+      </div>
+
+      <h2>How jwe.js works</h2>
+      <p>The whole script is an IIFE in <code>"use strict"</code>. It resolves direction, dispatches to one of two functions, and never lets an exception escape the policy.</p>
+
+      <h3>Mode resolution</h3>
+      <p>Apigee surfaces a policy <code>&lt;Property&gt;</code> through the read-only global <code>properties</code> object — <em>not</em> through <code>context.getVariable</code>. The script reads <code>properties["jwe.mode"]</code> first, accepts a flow variable <code>jwe.mode</code> as an override, then defaults to <code>"decrypt"</code> for safety.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/jwe.js — direction</span><span class="code-lang">JS</span></div>
+<pre><code><span class="tok-cmt">// Reset any prior diagnostic so a clean run does not inherit a stale error.</span>
+context.setVariable(<span class="tok-str">"jwe.error"</span>, <span class="tok-str">""</span>);
+
+<span class="tok-key">var</span> mode;
+<span class="tok-key">try</span> {
+  <span class="tok-key">if</span> (<span class="tok-key">typeof</span> properties !== <span class="tok-str">"undefined"</span> &amp;&amp; properties &amp;&amp; properties[<span class="tok-str">"jwe.mode"</span>]) {
+    mode = properties[<span class="tok-str">"jwe.mode"</span>];
+  }
+} <span class="tok-key">catch</span> (ePropsIgnored) { <span class="tok-cmt">/* fall through to flow variable */</span> }
+<span class="tok-key">if</span> (!mode) { mode = context.getVariable(<span class="tok-str">"jwe.mode"</span>); }
+<span class="tok-key">if</span> (!mode) { mode = <span class="tok-str">"decrypt"</span>; }</code></pre>
+      </div>
+
+      <h3>Decrypt — inbound request</h3>
+      <p>The structural guard <code>isCompactJWE</code> returns true only for a string of exactly five base64url segments (<code>header.key.iv.ciphertext.tag</code>). The recipient RSA private key is read from <code>private.jwe.key</code>, parsed with <code>KEYUTIL.getKey</code> (a top-level <code>jsrsasign</code> global, not under <code>KJUR</code>), and the decrypt is constrained to the FAPI algorithm allow-list.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/jwe.js — doDecrypt()</span><span class="code-lang">JS</span></div>
+<pre><code><span class="tok-key">var</span> payload = context.getVariable(<span class="tok-str">"request.content"</span>);
+<span class="tok-key">if</span> (!isCompactJWE(payload)) {       <span class="tok-cmt">// not a JWE -> leave request as-is</span>
+  context.setVariable(<span class="tok-str">"jwe.decrypted"</span>, <span class="tok-key">false</span>);
+  <span class="tok-key">return</span>;
+}
+<span class="tok-key">var</span> privateKeyPem = context.getVariable(<span class="tok-str">"private.jwe.key"</span>);   <span class="tok-cmt">// from KVM</span>
+<span class="tok-key">var</span> prvKey = KEYUTIL.getKey(privateKeyPem);
+
+<span class="tok-cmt">// Restrict accepted algorithms to the FAPI profile to avoid alg-downgrade.</span>
+<span class="tok-key">var</span> result = KJUR.jose.JWE.decrypt(payload, prvKey, {
+  alg: [<span class="tok-str">"RSA-OAEP-256"</span>],
+  enc: [<span class="tok-str">"A256GCM"</span>]
+});
+context.setVariable(<span class="tok-str">"request.content"</span>, result);
+context.setVariable(<span class="tok-str">"jwe.decrypted"</span>, <span class="tok-key">true</span>);</code></pre>
+      </div>
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 4.5 21 19.5H3L12 4.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M12 10v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="16.75" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">The algorithm allow-list is the security control</span>
+          <p>Passing <code>{ alg: ["RSA-OAEP-256"], enc: ["A256GCM"] }</code> to <code>KJUR.jose.JWE.decrypt</code> is what makes this FAPI-safe. Without it, <code>jsrsasign</code> would honour whatever <code>alg</code>/<code>enc</code> the attacker put in the protected header, opening the door to algorithm-downgrade attacks. Keep this list narrow; widen it only for a documented reason.</p>
+        </div>
+      </div>
+
+      <h3>Encrypt — outbound response</h3>
+      <p>The plaintext (<code>response.content</code>) is coerced to a string, the recipient public key is read from <code>public.jwe.key</code>, and a JOSE header is built with the fixed profile plus an optional <code>kid</code> from <code>jwe.kid</code>. On success the body is replaced and the response <code>Content-Type</code> is set to <code>application/jose</code>.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/jwe.js — doEncrypt()</span><span class="code-lang">JS</span></div>
+<pre><code><span class="tok-key">var</span> pubKey = KEYUTIL.getKey(context.getVariable(<span class="tok-str">"public.jwe.key"</span>));
+<span class="tok-key">var</span> kid = context.getVariable(<span class="tok-str">"jwe.kid"</span>);   <span class="tok-cmt">// optional key id</span>
+
+<span class="tok-key">var</span> header = {
+  alg: <span class="tok-str">"RSA-OAEP-256"</span>,
+  enc: <span class="tok-str">"A256GCM"</span>,
+  cty: <span class="tok-str">"application/json"</span>
+};
+<span class="tok-key">if</span> (kid) { header.kid = kid; }
+
+<span class="tok-key">var</span> jwe = KJUR.jose.JWE.encrypt(pubKey, JSON.stringify(header), plaintext);
+
+context.setVariable(<span class="tok-str">"response.content"</span>, jwe);
+context.setVariable(<span class="tok-str">"response.header.Content-Type"</span>, <span class="tok-str">"application/jose"</span>);
+context.setVariable(<span class="tok-str">"jwe.encrypted"</span>, <span class="tok-key">true</span>);</code></pre>
+      </div>
+
+      <h3>Error handling — the policy never faults</h3>
+      <p>The dispatch is wrapped in a single <code>try/catch</code>. Any failure — bad key, malformed token, rejected algorithm — is recorded in <code>jwe.error</code> and swallowed; the message body is left untouched. So although the policies declare <code>continueOnError="false"</code>, in practice no exception ever propagates out, and the proxy must inspect <code>jwe.error</code> to react.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/jwe.js — dispatch</span><span class="code-lang">JS</span></div>
+<pre><code><span class="tok-key">try</span> {
+  <span class="tok-key">if</span> (mode === <span class="tok-str">"encrypt"</span>) { doEncrypt(); }
+  <span class="tok-key">else</span> { doDecrypt(); }
+} <span class="tok-key">catch</span> (e) {
+  <span class="tok-cmt">// Never propagate the raw exception; record it for the fault-handling flow.</span>
+  context.setVariable(<span class="tok-str">"jwe.error"</span>, (e &amp;&amp; e.message) ? e.message : String(e));
+}</code></pre>
+      </div>
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 4.5 21 19.5H3L12 4.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M12 10v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="16.75" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Check jwe.error downstream</span>
+          <p>Because exceptions are caught internally, a decrypt failure produces a successful policy and an <em>unchanged</em> (still-ciphertext) <code>request.content</code>, not an Apigee JWT-style fault. The consuming proxy should add a step after <code>sf-jwe</code> that raises an OB error envelope when <code>jwe.error</code> is non-empty — otherwise an undecryptable body could be forwarded to the backend verbatim.</p>
+        </div>
+      </div>
+
+      <h2>Variable contract</h2>
+      <p>Everything <code>jwe.js</code> reads and writes, in one place.</p>
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>jwe.mode</td><td>in (property/var)</td><td>Direction selector — <code>"decrypt"</code> or <code>"encrypt"</code>; defaults to decrypt.</td></tr>
+          <tr><td>private.jwe.key</td><td>in (KVM)</td><td>Recipient RSA private key (PEM) for decrypt.</td></tr>
+          <tr><td>public.jwe.key</td><td>in (KVM)</td><td>Recipient/client RSA public key (PEM) for encrypt.</td></tr>
+          <tr><td>jwe.kid</td><td>in (optional)</td><td>Key id stamped into the JOSE header on encrypt, if present.</td></tr>
+          <tr><td>request.content</td><td>in/out</td><td>Read as ciphertext, replaced with plaintext on a successful decrypt.</td></tr>
+          <tr><td>response.content</td><td>in/out</td><td>Read as plaintext, replaced with a compact JWE on encrypt.</td></tr>
+          <tr><td>jwe.decrypted</td><td>out</td><td><code>true</code> if a JWE was decrypted, <code>false</code> if the body was not a JWE.</td></tr>
+          <tr><td>jwe.encrypted</td><td>out</td><td><code>true</code> once a response has been encrypted.</td></tr>
+          <tr><td>jwe.error</td><td>out</td><td>Reset to <code>""</code> each run; set to the caught exception message on failure.</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Key handling</h2>
+      <p>Keys are never embedded. Both directions read a PEM from a flow variable that a preceding policy must populate from a KVM — preferably an <em>encrypted</em> KVM via a <code>KeyValueMapOperations</code> policy with <code>mapIdentifier="jwe-keys"</code>. The PEMs hard-coded in <code>jwe.js</code> are loud placeholders that exist only so local smoke tests fail visibly.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/jwe.js — placeholder (do NOT ship)</span><span class="code-lang">JS</span></div>
+<pre><code><span class="tok-key">var</span> privateKeyPem = context.getVariable(<span class="tok-str">"private.jwe.key"</span>);
+<span class="tok-key">if</span> (!privateKeyPem) {
+  privateKeyPem =
+    <span class="tok-str">"-----BEGIN PRIVATE KEY-----\n"</span> +
+    <span class="tok-str">"REPLACE_WITH_KVM_VALUE_private.jwe.key\n"</span> +
+    <span class="tok-str">"-----END PRIVATE KEY-----"</span>;
+}</code></pre>
+      </div>
+      <div class="callout danger">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M12 7.5v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="16" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Wire up the KVM before enabling JWE</span>
+          <p>If <code>private.jwe.key</code> / <code>public.jwe.key</code> are not set, <code>KEYUTIL.getKey</code> is handed the <code>REPLACE_WITH_KVM_VALUE_*</code> placeholder, throws, and the message passes through unchanged with <code>jwe.error</code> populated. Add a <code>KeyValueMapOperations</code> step that loads the keys into these variables <em>before</em> the JS policy, and store the private key in an encrypted KVM.</p>
+        </div>
+      </div>
+
+      <h2>FAPI relevance</h2>
+      <p>This flow delivers payload confidentiality, the JOSE complement to the chassis's transport (mTLS) and integrity (JWS) layers.</p>
+      <div class="pillrow">
+        <span class="layer-chip">JWE compact serialization</span>
+        <span class="layer-chip">RSA-OAEP-256</span>
+        <span class="layer-chip">A256GCM (AEAD)</span>
+        <span class="layer-chip">Algorithm allow-list</span>
+        <span class="layer-chip">End-to-end confidentiality</span>
+      </div>
+      <ul>
+        <li><strong>Approved crypto profile.</strong> RSA-OAEP-256 for key management and A256GCM (authenticated encryption) for content matches the JWE profile recommended for FAPI / UK Open Banking sensitive payloads.</li>
+        <li><strong>Downgrade resistance.</strong> The explicit <code>alg</code>/<code>enc</code> allow-list on decrypt prevents an attacker from forcing a weaker or <code>none</code>-style algorithm via the protected header.</li>
+        <li><strong>Confidentiality beyond the TLS hop.</strong> The body stays encrypted through load balancers, proxies and logs — only the holder of <code>private.jwe.key</code> can read it.</li>
+        <li><strong>Correct media typing.</strong> Encrypt sets <code>Content-Type: application/jose</code> and a <code>cty: application/json</code> header so the recipient knows it is JOSE wrapping JSON.</li>
+        <li><strong>Additive, not mandatory.</strong> Non-JOSE requests pass untouched, so JWE can be turned on per route without breaking plaintext clients during rollout.</li>
+      </ul>
+
+      <h2>Configuration knobs</h2>
+      <p>The placeholder and profile values to change before production.</p>
+      <div class="grid-2">
+        <div class="card">
+          <h4>Key sources</h4>
+          <p><code>private.jwe.key</code> and <code>public.jwe.key</code> must be loaded from a KVM (suggested <code>mapIdentifier="jwe-keys"</code>) by a <code>KeyValueMapOperations</code> step ahead of the JS policy. Never leave the in-file PEM placeholders.</p>
+        </div>
+        <div class="card">
+          <h4>Crypto profile</h4>
+          <p>The <code>alg</code>/<code>enc</code> allow-list (decrypt) and the JOSE header (encrypt) live in <code>jwe.js</code>: <code>RSA-OAEP-256</code> + <code>A256GCM</code>. Changing the profile means editing the script, not the policy XML.</p>
+        </div>
+        <div class="card">
+          <h4>Trigger condition</h4>
+          <p>The media-type match in <code>default.xml</code> (<code>application/jose*</code> / <code>application/jwe*</code>) decides when decrypt runs. Tighten or broaden it to match your clients' <code>Content-Type</code>.</p>
+        </div>
+        <div class="card">
+          <h4>Response encryption</h4>
+          <p><code>JS-EncryptJWE</code> is unstepped. Attach it on a proxy's response flow (often gated on <code>Accept: application/jose</code>) and supply <code>jwe.kid</code> if the client needs to select a key.</p>
+        </div>
+        <div class="card">
+          <h4>Time limit</h4>
+          <p>Both policies set <code>timeLimit="5000"</code> (ms). Raise it only if large-payload RSA-OAEP operations approach the budget under load.</p>
+        </div>
+        <div class="card">
+          <h4>Failure handling</h4>
+          <p><code>jwe.error</code> is the only failure signal. Add a downstream step that converts a non-empty <code>jwe.error</code> into the tenant's OB Read/Write error envelope.</p>
+        </div>
+      </div>
+
+      <h2>Where this fits</h2>
+      <p>In the reference proxy <code>sf-jwe</code> is the last of the request-side security flows — after authentication and integrity, the message is finally decrypted for the backend. The cumulative request order is:</p>
+      <div class="pillrow">
+        <span class="chip plain">sf-mtls-binding</span>
+        <span class="chip plain">sf-preflight</span>
+        <span class="chip plain">sf-fapi-headers</span>
+        <span class="chip plain">sf-jwt-validation</span>
+        <span class="chip plain">sf-jws-validation</span>
+        <span class="chip gold">sf-jwe</span>
+      </div>
+      <p class="note">By the time <code>sf-jwe</code> finishes the request, the body has been decrypted in place for the target. On the way out, an optionally-attached <code>JS-EncryptJWE</code> re-seals the response for the client — the symmetric bookend of this flow.</p>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

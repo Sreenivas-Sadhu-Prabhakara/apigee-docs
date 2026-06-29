@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>Deployment &amp; testing — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html" class="active">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <span class="eyebrow">Proxy &amp; operations</span>
+      <h1>Deployment &amp; testing</h1>
+
+      <div class="answer">
+        <p>Deploy with <strong>apigeecli</strong>, authenticated by a short-lived <code>gcloud</code> access token. <code>tools/deploy.sh</code> pushes the <strong>ten shared flows FIRST, then the <code>bank-accounts-v1</code> proxy</strong> — because the proxy's <code>FlowCallout</code> policies resolve shared flows <em>by name at import time</em>, so each one must already exist in the target environment or the proxy deploy fails. Gate every push with <code>tools/validate.sh</code> (static XML + cross-reference checks), then prove the chassis end-to-end with two live <code>curl</code> smoke tests against the eval host <code>your-eval-host</code>: an unauthenticated request returns <span class="chip errst">401</span> <code>UK.OBIE.Unauthorized</code>, and a malformed <code>x-fapi-interaction-id</code> returns <span class="chip errst">400</span> <code>UK.OBIE.Field.Invalid</code>. Two org-specific realities shaped the bundle: <code>StatisticsCollector</code> analytics is omitted (this org's bundle validator rejects it), and native <code>CloudLogging</code> ships out-of-band because it needs a deploy-time service account.</p>
+      </div>
+
+      <p class="lead">There is no Maven plugin, no <code>apigee-deploy</code> magic, and no long-lived service-account key in this path. Deployment is a single idempotent Bash script driving the official <code>apigeecli</code> binary with a token you mint locally — the same primitives the CI pipeline uses, minus Workload Identity Federation.</p>
+
+      <h2>Prerequisites</h2>
+      <p>Three things must be in place before <code>deploy.sh</code> will run: the <code>apigeecli</code> binary, an access token, and (optionally) the org/env overrides. The defaults target the eval environment used throughout this documentation.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">install + authenticate</span><span class="code-lang">bash</span></div>
+<pre><code><span class="tok-cmt"># 1. Install apigeecli — the official installer drops the binary at</span>
+<span class="tok-cmt">#    ~/.apigeecli/bin/apigeecli, which is exactly the path deploy.sh probes.</span>
+curl -L https://raw.githubusercontent.com/apigee/apigeecli/main/downloadLatest.sh | sh
+
+<span class="tok-cmt"># 2. Authenticate to GCP once; the token is read at deploy time.</span>
+gcloud auth login
+
+<span class="tok-cmt"># 3. Point at the target org/env (defaults shown — export to override).</span>
+export APIGEE_ORG=your-apigee-project
+export APIGEE_ENV=eval
+export APIGEE_TOKEN=$(gcloud auth print-access-token)</code></pre>
+      </div>
+
+      <p>Every value above has a fallback baked into the script, so on the default org/env you can run <code>./tools/deploy.sh</code> with no exports at all — <code>APIGEE_TOKEN</code> falls back to <code>gcloud auth print-access-token</code> at runtime.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>APIGEE_ORG</td><td><code>your-apigee-project</code></td><td>Target Apigee X organization (the GCP project).</td></tr>
+          <tr><td>APIGEE_ENV</td><td><code>eval</code></td><td>Target environment; bundles are deployed here.</td></tr>
+          <tr><td>APIGEE_TOKEN</td><td><code>$(gcloud auth print-access-token)</code></td><td>OAuth2 bearer for the Apigee management API. Short-lived (~1h).</td></tr>
+          <tr><td>APIGEECLI</td><td><code>$HOME/.apigeecli/bin/apigeecli</code></td><td>Path to the binary; override if installed elsewhere.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v5M12 7.5h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">A gcloud token, never a downloaded key</span>
+          <p>The local path uses an ephemeral user token from <code>gcloud auth print-access-token</code> — nothing is persisted to disk. The CI path replaces this with Workload Identity Federation (no key at all). At no point does this repository carry a service-account JSON key. See <a href="cicd-iam.html">CI/CD &amp; IAM</a>.</p>
+        </div>
+      </div>
+
+      <h2>Validate before you deploy</h2>
+      <p><code>tools/validate.sh</code> runs the same two classes of check Apigee enforces on import, but locally and in milliseconds — so a broken bundle never costs you a round trip to the management API. It exits non-zero on any failure, which is why CI runs it as a gate.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4>1. XML well-formedness</h4>
+          <p>Every <code>*.xml</code> under <code>shared-flows/</code> and <code>apiproxies/</code> is parsed with <code>xmllint --noout</code>. A single malformed policy fails the run and prints the parser error.</p>
+        </div>
+        <div class="card">
+          <h4>2. Cross-reference integrity</h4>
+          <p>For each bundle it proves the three-way contract holds: every <code>&lt;Step&gt;</code> name in <code>default.xml</code> has a matching policy file <em>and</em> a <code>&lt;Policy&gt;</code> entry in the manifest; every manifest policy has a file; and every policy file's root <code>name=</code> attribute equals its filename.</p>
+        </div>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">static gate</span><span class="code-lang">bash</span></div>
+<pre class="shell"><code>./tools/validate.sh
+<span class="tok-cmt"># &gt;&gt; XML well-formedness (xmllint)</span>
+<span class="tok-cmt"># &gt;&gt; Cross-reference integrity (steps &lt;-&gt; policy files &lt;-&gt; manifest)</span>
+<span class="tok-cmt"># ✓ ALL CHECKS PASSED</span></code></pre>
+      </div>
+
+      <h2>Deploy order — shared flows first, then the proxy</h2>
+      <p><code>tools/deploy.sh</code> is <code>set -euo pipefail</code> and runs four phases. The ordering is not cosmetic: it is the single most important operational fact about this chassis.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>Resolve org / env / token</h4>
+          <p>Reads <code>APIGEE_ORG</code>, <code>APIGEE_ENV</code>, <code>APIGEE_TOKEN</code> with the defaults above; <code>TOKEN</code> falls back to <code>gcloud auth print-access-token</code> if unset. <code>CLI</code> resolves to <code>$APIGEECLI</code> or <code>~/.apigeecli/bin/apigeecli</code>.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Stage the vendored crypto library</h4>
+          <p>Copies <code>tools/vendor/jsrsasign-all-min.js</code> into the <code>resources/jsc</code> directory of <code>sf-jwe</code> and <code>sf-mtls-binding</code> if it is not already present — those two bundles' JavaScript policies depend on it. The check is idempotent, so re-runs are no-ops.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Deploy the ten shared flows, in dependency order</h4>
+          <p>Iterates the <code>SHARED_FLOWS</code> array (<code>sf-preflight</code> → <code>sf-fapi-headers</code> → <code>sf-jwt-validation</code> → <code>sf-jws-validation</code> → <code>sf-jwe</code> → <code>sf-mtls-binding</code> → <code>sf-security-headers</code> → <code>sf-traffic-management</code> → <code>sf-error-handling</code> → <code>sf-logging</code>), creating and deploying each bundle with <code>--ovr --wait</code>.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Deploy the reference proxy</h4>
+          <p>Only now is <code>bank-accounts-v1</code> imported and deployed. Its <code>FlowCallout</code>s (<code>FC-Preflight</code>, <code>FC-FapiHeaders</code>, …) can now resolve every shared flow they reference.</p>
+        </div>
+      </div>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4M12 17h.01M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Why shared flows must go first</span>
+          <p>The proxy is deliberately thin: its <code>PreFlow</code> is a chain of <code>FlowCallout</code> policies that invoke shared flows by name. Apigee validates those references when the proxy revision is imported — if a referenced shared flow does not yet exist in the environment, the proxy import is rejected. Deploying the chassis first guarantees the names resolve. Deploy the proxy first and you get a hard failure, not a silent gap.</p>
+        </div>
+      </div>
+
+      <p>Both phases use the same <code>apigeecli</code> shape. <code>create bundle</code> with <code>-e</code> imports a new revision <em>and</em> deploys it; <code>--ovr</code> overwrites the existing deployment, <code>--wait</code> blocks until the deployment reaches a terminal state (failing the script on error), and <code>--disable-check --no-warnings</code> quiet the CLI's self-update check and non-fatal notices.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">tools/deploy.sh — the two deploy calls</span><span class="code-lang">bash</span></div>
+<pre><code><span class="tok-cmt"># Phase 3 — every shared flow, in order:</span>
+<span class="tok-key">for</span> sf <span class="tok-key">in</span> "${SHARED_FLOWS[@]}"; <span class="tok-key">do</span>
+  "$CLI" sharedflows create bundle \
+    -n "$sf" -f "$ROOT/shared-flows/$sf/sharedflowbundle" \
+    -e "$ENV" --ovr --wait \
+    -o "$ORG" -t "$TOKEN" --disable-check --no-warnings
+<span class="tok-key">done</span>
+
+<span class="tok-cmt"># Phase 4 — the reference proxy, last:</span>
+"$CLI" apis create bundle \
+  -n "bank-accounts-v1" -f "$ROOT/apiproxies/bank-accounts-v1/apiproxy" \
+  -e "$ENV" --ovr --wait \
+  -o "$ORG" -t "$TOKEN" --disable-check --no-warnings</code></pre>
+      </div>
+
+      <h2>Live smoke tests</h2>
+      <p>Two <code>curl</code> calls against the eval host exercise the full PreFlow ordering and prove the chassis is wired end-to-end. The proxy's base path is <code>/open-banking/v1.1/accounts</code> and the accounts resource is <code>/accounts</code>, so the live URL is <code>https://your-eval-host/open-banking/v1.1/accounts/accounts</code>. Both responses are normalized by <code>FC-ErrorHandling</code> in the proxy's <code>DefaultFaultRule</code>, which is why the wire result differs from the raw <code>RaiseFault</code> body.</p>
+
+      <div class="pillrow">
+        <span class="chip method">GET</span>
+        <span class="chip plain">/open-banking/v1.1/accounts/accounts</span>
+      </div>
+
+      <h3>Test 1 — unauthenticated request → 401</h3>
+      <p>A valid <code>x-fapi-interaction-id</code> but no <code>Authorization: Bearer</code> header. The request clears <code>FC-Preflight</code> and <code>FC-FapiHeaders</code>, then <code>FC-JwtValidation</code> raises <code>RF-MissingToken</code>. The error handler maps the 401 status to the OB contract.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">smoke test 1 — missing token</span><span class="code-lang">bash</span></div>
+<pre class="shell"><code>curl -i https://your-eval-host/open-banking/v1.1/accounts/accounts \
+  -H "x-fapi-interaction-id: $(uuidgen)"</code></pre>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">expected — HTTP/1.1 401 Unauthorized</span><span class="code-lang">JSON</span></div>
+<pre><code>{
+  "Code": "401",
+  "Id": "&lt;your interaction id&gt;",
+  "Message": "The access token is missing, invalid, or expired",
+  "Errors": [
+    {
+      "ErrorCode": "UK.OBIE.Unauthorized",
+      "Message": "The access token is missing, invalid, or expired"
+    }
+  ]
+}</code></pre>
+      </div>
+
+      <h3>Test 2 — malformed FAPI header → 400</h3>
+      <p>An <code>x-fapi-interaction-id</code> that is not an RFC 4122 UUID. Preflight passes (a header-only GET), but <code>FC-FapiHeaders</code> raises <code>RF-InvalidInteractionId</code> <em>before</em> token validation ever runs — header hygiene is enforced ahead of identity.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">smoke test 2 — bad interaction id</span><span class="code-lang">bash</span></div>
+<pre class="shell"><code>curl -i https://your-eval-host/open-banking/v1.1/accounts/accounts \
+  -H "x-fapi-interaction-id: not-a-uuid"</code></pre>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">expected — HTTP/1.1 400 Bad Request</span><span class="code-lang">JSON</span></div>
+<pre><code>{
+  "Code": "400",
+  "Id": "&lt;normalized interaction id&gt;",
+  "Message": "A request field is missing or invalid",
+  "Errors": [
+    {
+      "ErrorCode": "UK.OBIE.Field.Invalid",
+      "Message": "A request field is missing or invalid"
+    }
+  ]
+}</code></pre>
+      </div>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Test</th><th>Rejected by</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>No bearer token, valid headers</td>
+            <td><code>FC-JwtValidation</code> → <code>RF-MissingToken</code></td>
+            <td><span class="chip errst">401</span> <code>UK.OBIE.Unauthorized</code></td>
+          </tr>
+          <tr>
+            <td>Malformed <code>x-fapi-interaction-id</code></td>
+            <td><code>FC-FapiHeaders</code> → <code>RF-InvalidInteractionId</code></td>
+            <td><span class="chip errst">400</span> <code>UK.OBIE.Field.Invalid</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v5M12 7.5h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">The wire code is the normalized code, not the RaiseFault code</span>
+          <p><code>RF-InvalidInteractionId</code> raises a body carrying <code>UK.OBIE.Header.Invalid</code>, but the <code>DefaultFaultRule</code> re-runs the request through <code>FC-ErrorHandling</code>. <code>errorMap.js</code> classifies the fault by its <strong>status code</strong> (400) — the <code>RaiseFault</code> fault name does not match the keyword branches — so it remaps to <code>UK.OBIE.Field.Invalid</code> and <code>AM-ErrorResponse</code> rewrites the response. The client sees one consistent OB error shape regardless of which policy first tripped.</p>
+        </div>
+      </div>
+
+      <h2>Two deployment gotchas</h2>
+      <p>Both are real constraints discovered against this specific Apigee X org, and both are visible in the source. They explain why <code>sf-logging</code> looks smaller than you might expect.</p>
+
+      <h3>StatisticsCollector is not supported by this org</h3>
+      <p>The original design called for a <code>StatisticsCollector</code> policy in <code>sf-logging</code> to push custom analytics dimensions. This org's bundle validator <strong>rejects</strong> that policy on import, so it was removed entirely rather than left to fail every deploy. The omission is documented in the bundle's own description.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">shared-flows/sf-logging/sharedflowbundle/sf-logging.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">Description</span>&gt;Structured observability: Google Cloud Logging with secret
+redaction for the FAPI bank API chassis. (Custom analytics via
+StatisticsCollector is intentionally omitted — not supported by this
+Apigee org's bundle validator.)&lt;/<span class="tok-tag">Description</span>&gt;</code></pre>
+      </div>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4M12 17h.01M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Don't reintroduce it blindly</span>
+          <p>If you target an org that <em>does</em> support <code>StatisticsCollector</code>, add it back to <code>sf-logging</code> — but re-run <code>tools/validate.sh</code> and a real deploy first. The validator's policy support varies by org provisioning tier, and a rejected policy fails the whole bundle, not just that step.</p>
+        </div>
+      </div>
+
+      <h3>CloudLogging requires a deploy-time service account</h3>
+      <p>The native <code>MessageLogging</code> + <code>CloudLogging</code> policy (<code>ML-CloudLogging</code>) is <strong>not in the deployed bundle</strong>. It lives in <code>sf-logging/optional-cloudlogging/</code>. Apigee X demands a runtime service-account identity whenever a deployed revision contains a Cloud-integrated policy; without one the deploy fails with:</p>
+
+      <blockquote>Deployment of sf-logging requires a service account identity, but one was not provided.</blockquote>
+
+      <p>With only <code>roles/apigee.admin</code> you cannot yet create or <code>actAs</code> a service account, so the chassis ships with SA-free structured logging via <code>AM-LogContext</code> (which populates the <code>audit.log</code> flow variable, visible in trace and analytics) and keeps <code>ML-CloudLogging</code> on the shelf. To enable it after IAM elevation, deploy <code>sf-logging</code> with the <code>-s</code> identity flag:</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">enabling CloudLogging — after IAM elevation</span><span class="code-lang">bash</span></div>
+<pre><code><span class="tok-cmt"># 1. Create a runtime SA and grant it logging access.</span>
+gcloud iam service-accounts create apigee-runtime \
+  --project your-apigee-project
+gcloud projects add-iam-policy-binding your-apigee-project \
+  --member "serviceAccount:apigee-runtime@your-apigee-project.iam.gserviceaccount.com" \
+  --role roles/logging.logWriter
+
+<span class="tok-cmt"># 2. Move ML-CloudLogging back into the bundle, add it to the manifest</span>
+<span class="tok-cmt">#    and to sharedflows/default.xml, then deploy WITH the -s identity:</span>
+apigeecli sharedflows deploy -n sf-logging -e eval --ovr --wait \
+  -s apigee-runtime@your-apigee-project.iam.gserviceaccount.com \
+  -o your-apigee-project -t "$(gcloud auth print-access-token)"</code></pre>
+      </div>
+
+      <div class="callout danger">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4.5M12 16h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">The SA requirement is per-revision, not per-org</span>
+          <p>The identity is needed because the <em>deployed revision contains a Cloud-integrated policy</em> — it is not a one-time org setting. Any shared flow or proxy you later give a <code>CloudLogging</code>, <code>GoogleAuthentication</code>, or similar policy will demand the same <code>-s</code> identity at deploy time. The local <code>deploy.sh</code> passes no <code>-s</code>, which is exactly why <code>ML-CloudLogging</code> stays out of the default bundle. See <a href="cicd-iam.html">CI/CD &amp; IAM</a> for the elevation path.</p>
+        </div>
+      </div>
+
+      <hr>
+      <p class="muted note">Source of truth: <code>tools/deploy.sh</code>, <code>tools/validate.sh</code>, <code>apiproxies/bank-accounts-v1/apiproxy/proxies/default.xml</code>, <code>shared-flows/sf-logging/sharedflowbundle/sf-logging.xml</code>, and <code>shared-flows/sf-logging/optional-cloudlogging/</code>. Eval host <code>your-eval-host</code>, org <code>your-apigee-project</code>, env <code>eval</code>.</p>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

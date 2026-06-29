@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>FAPI Security Model — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html" class="active">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <h1>FAPI Security Model</h1>
+
+      <div class="answer">
+        <p>Apigee Docs implements <strong>FAPI 1.0 Advanced</strong> for UK Open Banking as five composable, independently testable controls — one Apigee shared flow each. Together they cover the four FAPI guarantees (caller authentication, message integrity, message confidentiality, and token-to-sender binding) plus the mandated traceability headers:</p>
+        <ul>
+          <li><strong>Caller &amp; authorization</strong> — <code>sf-jwt-validation</code> verifies the OAuth2 access-token JWT (RS256/PS256) against a rotating <code>JWKS</code> and enforces the <code>accounts</code> scope.</li>
+          <li><strong>Request integrity / non-repudiation</strong> — <code>sf-jws-validation</code> verifies a <em>detached</em> JWS (<code>PS256</code>, <code>b64=false</code> per RFC 7797) over the body, with the OB critical headers.</li>
+          <li><strong>Payload confidentiality</strong> — <code>sf-jwe</code> decrypts inbound (and can encrypt outbound) JWE using <code>RSA-OAEP-256</code> + <code>A256GCM</code>.</li>
+          <li><strong>Sender-constrained tokens</strong> — <code>sf-mtls-binding</code> matches the token's <code>cnf.x5t#S256</code> against the SHA-256 thumbprint of the presented client mTLS certificate (RFC 8705).</li>
+          <li><strong>Traceability</strong> — <code>sf-fapi-headers</code> validates and normalises the <code>x-fapi-*</code> headers.</li>
+        </ul>
+        <p>Each layer fails closed and renders a UK OBIE error envelope. Every cryptographic anchor (JWKS URIs, issuer, audience, KVM key names) is a <strong>placeholder</strong> meant to be repointed per environment.</p>
+      </div>
+
+      <p class="lead">This page is the cross-cutting security narrative: <em>what</em> each control proves, <em>where</em> it is enforced, the actual algorithm and step order in code, and the threat it removes. The per-flow pages carry the full policy walkthroughs.</p>
+
+      <div class="pillrow">
+        <span class="layer-chip">OAuth2 JWT · JWKS</span>
+        <span class="layer-chip">Detached JWS · PS256</span>
+        <span class="layer-chip">JWE · RSA-OAEP-256 / A256GCM</span>
+        <span class="layer-chip">mTLS cert binding · x5t#S256</span>
+        <span class="layer-chip">x-fapi headers</span>
+      </div>
+
+      <h2>Defence in depth, layer by layer</h2>
+      <p>The controls are ordered so each one builds on the variables the previous one published. <code>sf-fapi-headers</code> establishes the interaction id used in every fault; <code>sf-jwt-validation</code> verifies the token and exposes its claims (including <code>cnf</code>); <code>sf-mtls-binding</code> then consumes <code>jwt.VJWT-AccessToken.claim.cnf</code>, so it must run <em>after</em> JWT validation.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>Traceability — <code>sf-fapi-headers</code></h4>
+          <p>Validate <code>x-fapi-interaction-id</code> (UUID) and <code>x-fapi-customer-ip-address</code> (IPv4/IPv6); echo or mint the interaction id and publish it on <code>fapi.interaction.id</code> for every downstream fault.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Authentication &amp; authorization — <code>sf-jwt-validation</code></h4>
+          <p>Extract the bearer token, fault 401 if absent, verify signature/issuer/audience/expiry via JWKS, fault 403 without the <code>accounts</code> scope. Publishes all token claims.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Sender constraint — <code>sf-mtls-binding</code></h4>
+          <p>Recompute <code>base64url(SHA-256(DER))</code> of the client certificate and compare to the token's <code>cnf.x5t#S256</code>. Fail closed; 401 on mismatch.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Request integrity — <code>sf-jws-validation</code></h4>
+          <p>Verify the detached JWS in <code>x-jws-signature</code> over <code>request.content</code> (<code>b64=false</code>), enforcing the OB critical headers.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Payload confidentiality — <code>sf-jwe</code></h4>
+          <p>If the request arrives as <code>application/jose</code>/<code>application/jwe</code>, decrypt it (<code>RSA-OAEP-256</code> + <code>A256GCM</code>) before the target sees it; the matching encrypt policy is available for responses.</p>
+        </div>
+      </div>
+
+      <table class="policy">
+        <thead><tr><th>Control</th><th>Shared flow</th><th>Threat removed</th></tr></thead>
+        <tbody>
+          <tr><td>OAuth2 JWT + JWKS</td><td>sf-jwt-validation</td><td>Forged / tampered / replayed-elsewhere tokens; over-broad access</td></tr>
+          <tr><td>Detached JWS (PS256)</td><td>sf-jws-validation</td><td>Body tampering in transit; repudiation of a write/payment</td></tr>
+          <tr><td>JWE (RSA-OAEP-256/A256GCM)</td><td>sf-jwe</td><td>Payload disclosure to intermediaries, logs, or TLS-terminating proxies</td></tr>
+          <tr><td>Cert-bound token (x5t#S256)</td><td>sf-mtls-binding</td><td>Use of a stolen/exported bearer token by a party without the client key</td></tr>
+          <tr><td>x-fapi-* headers</td><td>sf-fapi-headers</td><td>Lost traceability; header injection / log forging via malformed values</td></tr>
+        </tbody>
+      </table>
+
+      <hr>
+
+      <h2>1 · OAuth2 JWT access tokens</h2>
+      <p class="eyebrow">Enforced in sf-jwt-validation</p>
+      <p class="lead">Proves the caller holds a valid, unexpired access token issued by <em>our</em> authorization server, for <em>this</em> API, carrying the right scope — without a network round-trip, because the token is a signed JWT verified against the rotating JWKS.</p>
+
+      <table class="policy">
+        <thead><tr><th>Name</th><th>Type</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>EV-BearerToken</td><td>ExtractVariables</td><td>Pull the token after <code>Bearer </code> in the <code>Authorization</code> header into <code>oauth.access.token</code>.</td></tr>
+          <tr><td>RF-MissingToken</td><td>RaiseFault</td><td>401 with <code>WWW-Authenticate: invalid_token</code> when no token is presented.</td></tr>
+          <tr><td>VJWT-AccessToken</td><td>VerifyJWT</td><td>Verify signature (RS256/PS256), issuer, audience and expiry against the JWKS.</td></tr>
+          <tr><td>RF-InsufficientScope</td><td>RaiseFault</td><td>403 with <code>WWW-Authenticate: insufficient_scope</code> when the <code>accounts</code> scope is absent.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Step order &amp; conditions</h3>
+      <p>The four steps run unconditionally except for the two faults, which are gated on flow variables:</p>
+      <ul>
+        <li><code>EV-BearerToken</code> — always; <code>IgnoreUnresolvedVariables=true</code> so an absent header does not fault here.</li>
+        <li><code>RF-MissingToken</code> — when <code>(oauth.access.token = null) or (oauth.access.token = "")</code>.</li>
+        <li><code>VJWT-AccessToken</code> — always (only reached with a token present).</li>
+        <li><code>RF-InsufficientScope</code> — when <code>NOT(jwt.VJWT-AccessToken.claim.scope ~ "*accounts*")</code>.</li>
+      </ul>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/VJWT-AccessToken.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">VerifyJWT</span> name=<span class="tok-str">"VJWT-AccessToken"</span>&gt;
+  &lt;<span class="tok-tag">Algorithm</span>&gt;RS256&lt;/<span class="tok-tag">Algorithm</span>&gt;          <span class="tok-cmt">&lt;!-- PS256 is the FAPI-preferred variant --&gt;</span>
+  &lt;<span class="tok-tag">Source</span>&gt;oauth.access.token&lt;/<span class="tok-tag">Source</span>&gt;
+  &lt;<span class="tok-tag">PublicKey</span>&gt;
+    &lt;<span class="tok-tag">JWKS</span> uri=<span class="tok-str">"https://auth.example.com/.well-known/jwks.json"</span>/&gt;
+  &lt;/<span class="tok-tag">PublicKey</span>&gt;
+  &lt;<span class="tok-tag">Issuer</span>&gt;https://auth.example.com&lt;/<span class="tok-tag">Issuer</span>&gt;
+  &lt;<span class="tok-tag">Audience</span>&gt;accounts-api&lt;/<span class="tok-tag">Audience</span>&gt;
+&lt;/<span class="tok-tag">VerifyJWT</span>&gt;</code></pre>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">FAPI relevance &amp; threat</span>
+          <p>Signature verification defeats <strong>forged or tampered tokens</strong>. The <code>Issuer</code> check rejects tokens minted by a foreign AS; the <code>Audience</code> check stops a valid token for another API being <strong>replayed</strong> here; the scope gate enforces least privilege. Using a <code>JWKS</code> URI (not an inline key) lets the AS <strong>rotate signing keys</strong> without redeploying the proxy.</p>
+        </div>
+      </div>
+
+      <h3>Configuration knobs</h3>
+      <ul>
+        <li><code>&lt;Algorithm&gt;</code> — ships as <code>RS256</code>; switch to <code>PS256</code> (RSASSA-PSS) to enforce the FAPI-preferred algorithm.</li>
+        <li><code>&lt;JWKS uri&gt;</code>, <code>&lt;Issuer&gt;</code>, <code>&lt;Audience&gt;</code> — repoint at your real authorization server per environment.</li>
+        <li>The scope match string <code>"*accounts*"</code> — tighten to the exact OB scope your resource requires.</li>
+      </ul>
+
+      <hr>
+
+      <h2>2 · Detached JWS request signatures</h2>
+      <p class="eyebrow">Enforced in sf-jws-validation</p>
+      <p class="lead">Proves the request body was authored by the TPP and reached us byte-for-byte intact — the basis for <strong>non-repudiation</strong> of writes and payments. The signature is detached (RFC 7797, <code>b64=false</code>) so the body is signed in place rather than re-encoded.</p>
+
+      <table class="policy">
+        <thead><tr><th>Name</th><th>Type</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>VJWS-Request</td><td>VerifyJWS</td><td>Verify the detached JWS in <code>x-jws-signature</code> over <code>request.content</code> using <code>PS256</code> and the signing JWKS, enforcing OB critical headers.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Step order &amp; conditions</h3>
+      <p>A single step, gated on the signature header being present:</p>
+      <ul>
+        <li><code>VJWS-Request</code> — when <code>(request.header.x-jws-signature != null)</code>. This lets the demo <code>GET</code> (no body, no signature) pass; any signature that <em>is</em> supplied is fully verified.</li>
+      </ul>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/VJWS-Request.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">VerifyJWS</span> name=<span class="tok-str">"VJWS-Request"</span>&gt;
+  &lt;<span class="tok-tag">Algorithm</span>&gt;PS256&lt;/<span class="tok-tag">Algorithm</span>&gt;
+  &lt;<span class="tok-tag">Source</span>&gt;request.header.x-jws-signature&lt;/<span class="tok-tag">Source</span>&gt;
+  &lt;<span class="tok-tag">DetachedContent</span>&gt;request.content&lt;/<span class="tok-tag">DetachedContent</span>&gt;
+  &lt;<span class="tok-tag">PublicKey</span>&gt;
+    &lt;<span class="tok-tag">JWKS</span> uri=<span class="tok-str">"https://auth.example.com/.well-known/signing-jwks.json"</span>/&gt;
+  &lt;/<span class="tok-tag">PublicKey</span>&gt;
+  &lt;<span class="tok-tag">CriticalHeaders</span>&gt;b64,http://openbanking.org.uk/iat,http://openbanking.org.uk/iss,http://openbanking.org.uk/tan&lt;/<span class="tok-tag">CriticalHeaders</span>&gt;
+&lt;/<span class="tok-tag">VerifyJWS</span>&gt;</code></pre>
+      </div>
+
+      <p>The four critical (<code>crit</code>) headers are exactly those the OB Read/Write spec mandates:</p>
+      <div class="pillrow">
+        <span class="chip teal">b64</span>
+        <span class="chip plain">http://openbanking.org.uk/iat</span>
+        <span class="chip plain">http://openbanking.org.uk/iss</span>
+        <span class="chip plain">http://openbanking.org.uk/tan</span>
+      </div>
+      <p class="muted"><code>b64=false</code> selects detached, unencoded-payload signing; <code>iat</code> is the signing timestamp, <code>iss</code> the signer, and <code>tan</code> the trust anchor (the directory that vouches for the signing key). A verifier that does not understand a listed <code>crit</code> header must reject the JWS.</p>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">FAPI relevance &amp; threat</span>
+          <p>The detached signature defeats <strong>request tampering</strong> by anything between the TPP and the resource (including a compromised TLS-terminating hop) and provides <strong>non-repudiation</strong>: the TPP cannot later deny a signed payment instruction. Pinning <code>PS256</code> and the <code>crit</code> set blocks algorithm-downgrade and <code>crit</code>-stripping attacks.</p>
+        </div>
+      </div>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3 2.5 20h19L12 3Z" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Production hardening</span>
+          <p>On write/payment proxies, <strong>enforce presence</strong>: drop the <code>x-jws-signature != null</code> condition (or invert it) so a missing signature is rejected, not skipped. Point <code>&lt;JWKS uri&gt;</code> at the TPP/OB signing key set, sourced from a KVM per environment.</p>
+        </div>
+      </div>
+
+      <hr>
+
+      <h2>3 · JWE payload encryption</h2>
+      <p class="eyebrow">Enforced in sf-jwe</p>
+      <p class="lead">Adds <strong>application-layer confidentiality</strong> on top of TLS, so sensitive payloads stay encrypted past the TLS terminator — through load balancers, proxies, and logs — until the bank's own policy decrypts them. Uses <code>RSA-OAEP-256</code> key wrapping with <code>A256GCM</code> authenticated content encryption.</p>
+
+      <table class="policy">
+        <thead><tr><th>Name</th><th>Type</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>JS-DecryptJWE</td><td>JavaScript</td><td>Decrypt the inbound request payload (<code>jwe.mode=decrypt</code>) back into <code>request.content</code>.</td></tr>
+          <tr><td>JS-EncryptJWE</td><td>JavaScript</td><td>Encrypt an outbound response (<code>jwe.mode=encrypt</code>); intentionally un-stepped — attach on a proxy's response flow when needed.</td></tr>
+        </tbody>
+      </table>
+      <p class="muted">Both policies share one resource, <code>jsc://jwe.js</code>, which uses the <code>jsrsasign</code> library (<code>KJUR.jose.JWE</code>). Direction is selected by the policy <code>&lt;Property name="jwe.mode"&gt;</code>.</p>
+
+      <h3>Step order &amp; conditions</h3>
+      <ul>
+        <li><code>JS-DecryptJWE</code> — when <code>(request.header.content-type ~ "application/jose*") or (request.header.content-type ~ "application/jwe*")</code>.</li>
+        <li><code>JS-EncryptJWE</code> — not stepped in <code>default.xml</code>; documented for response-side use.</li>
+      </ul>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/jwe.js — decrypt path</span><span class="code-lang">JavaScript</span></div>
+<pre><code><span class="tok-cmt">// Restrict accepted algorithms to the FAPI profile to avoid alg-downgrade.</span>
+<span class="tok-key">var</span> result = KJUR.jose.JWE.decrypt(payload, prvKey, {
+  alg: [<span class="tok-str">"RSA-OAEP-256"</span>],
+  enc: [<span class="tok-str">"A256GCM"</span>]
+});
+context.setVariable(<span class="tok-str">"request.content"</span>, result);</code></pre>
+      </div>
+
+      <p>Implementation details that matter for security:</p>
+      <ul>
+        <li><strong>Algorithm allow-list.</strong> Both <code>alg</code> and <code>enc</code> are pinned, so a token offering a weaker algorithm is refused rather than honoured.</li>
+        <li><strong>Shape check.</strong> <code>isCompactJWE()</code> requires exactly five base64url dot-segments before any crypto is attempted; non-JWE bodies pass through untouched.</li>
+        <li><strong>Keys from KVM.</strong> The recipient private key is read from <code>private.jwe.key</code> (and the client public key from <code>public.jwe.key</code>) — loaded by a preceding KeyValueMapOperations policy from an <em>encrypted</em> KVM. The in-file <code>REPLACE_WITH_KVM_VALUE_*</code> strings are deliberate, loud placeholders.</li>
+        <li><strong>Fail soft, never throw.</strong> Any error is recorded in <code>jwe.error</code> and the message left intact, so the error-handling flow can render an OB envelope rather than leaking a stack trace.</li>
+      </ul>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">FAPI relevance &amp; threat</span>
+          <p>JWE removes the assumption that "TLS is enough". It defends against <strong>payload disclosure</strong> at every point after TLS termination — mirrored traffic, debug logs, a breached intermediary. <code>A256GCM</code> is authenticated, so tampering with ciphertext fails the GCM tag; the pinned <code>alg</code>/<code>enc</code> list blocks downgrade.</p>
+        </div>
+      </div>
+
+      <h3>Configuration knobs</h3>
+      <ul>
+        <li><code>private.jwe.key</code> / <code>public.jwe.key</code> — populate from an encrypted KVM before this policy runs; never commit real keys.</li>
+        <li><code>jwe.kid</code> — optional key id stamped into the JOSE header on encrypt so the recipient selects the right key.</li>
+        <li><code>timeLimit="5000"</code> — JavaScript execution budget; tune for your payload sizes.</li>
+      </ul>
+
+      <hr>
+
+      <h2>4 · Certificate-bound (sender-constrained) tokens</h2>
+      <p class="eyebrow">Enforced in sf-mtls-binding</p>
+      <p class="lead">Turns a bearer token into a <strong>holder-of-key</strong> token: it is only usable by the client that owns the mTLS certificate it was issued against. Implements RFC 8705 by recomputing the certificate thumbprint and comparing it to the token's <code>cnf.x5t#S256</code> confirmation claim.</p>
+
+      <table class="policy">
+        <thead><tr><th>Name</th><th>Type</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>JS-VerifyCertBinding</td><td>JavaScript</td><td>Compute <code>base64url(SHA-256(DER))</code> of the client cert and compare to the token's <code>cnf.x5t#S256</code>; publish <code>cert.binding.match</code>.</td></tr>
+          <tr><td>RF-CertBindingMismatch</td><td>RaiseFault</td><td>401 OB envelope when the thumbprints do not match.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Step order &amp; conditions</h3>
+      <ul>
+        <li><code>JS-VerifyCertBinding</code> — when <code>(jwt.VJWT-AccessToken.claim.cnf != null) or (request.header.x-client-cert != null)</code>. This requires <code>sf-jwt-validation</code> to have run first to expose the <code>cnf</code> claim.</li>
+        <li><code>RF-CertBindingMismatch</code> — when <code>(cert.binding.match = false)</code>.</li>
+      </ul>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/certBinding.js — thumbprint compare</span><span class="code-lang">JavaScript</span></div>
+<pre><code><span class="tok-cmt">// x5t#S256 == base64url( SHA-256( DER-encoded client certificate ) )</span>
+<span class="tok-key">var</span> digestHex = KJUR.crypto.Util.hashHex(certHex, <span class="tok-str">'sha256'</span>);
+<span class="tok-key">var</span> computed  = hextob64u(digestHex);        <span class="tok-cmt">// base64url, no padding</span>
+<span class="tok-key">var</span> match     = (computed === expected);     <span class="tok-cmt">// expected = cnf['x5t#S256']</span>
+context.setVariable(<span class="tok-str">'cert.binding.match'</span>, match);</code></pre>
+      </div>
+
+      <p>Robustness details from the script:</p>
+      <ul>
+        <li><strong>Fail closed.</strong> <code>cert.binding.match</code> defaults to <code>false</code>; a match must be positively proven.</li>
+        <li><strong>Certificate source fallback.</strong> Reads, in order, <code>request.header.x-forwarded-client-cert</code>, the native <code>tls.client.raw.cert</code>, then <code>request.header.x-client-cert</code> — covering Apigee X behind a Google Cloud HTTPS LB (which forwards the cert as a header) and hybrid topologies.</li>
+        <li><strong>Format tolerance.</strong> Handles XFCC/Envoy <code>Cert="..."</code>, URL-encoded PEM, literal-newline PEM, and bare base64 DER, normalising each to DER hex (<code>pemtohex</code> / <code>b64utohex</code>).</li>
+        <li>Diagnostics land in <code>cert.binding.computed</code>, <code>cert.binding.expected</code>, and <code>cert.binding.error</code>.</li>
+      </ul>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">FAPI relevance &amp; threat</span>
+          <p>This is the single biggest mitigation against <strong>token theft</strong>. Even if an access token leaks (log, referrer, breached store), it is worthless to an attacker who cannot also present the client certificate's private key on the TLS connection. It closes the "exported bearer token" gap that plain OAuth2 leaves open.</p>
+        </div>
+      </div>
+
+      <h3>Configuration knobs</h3>
+      <ul>
+        <li>The forwarded-cert header name — align <code>x-forwarded-client-cert</code> / <code>x-client-cert</code> with how your load balancer presents the client certificate.</li>
+        <li>Sequence — keep this flow <em>after</em> <code>sf-jwt-validation</code> so <code>jwt.VJWT-AccessToken.claim.cnf</code> is populated.</li>
+      </ul>
+
+      <hr>
+
+      <h2>5 · The x-fapi-* headers</h2>
+      <p class="eyebrow">Enforced in sf-fapi-headers</p>
+      <p class="lead">Guarantees the traceability contract FAPI requires: a well-formed correlation id on every request and response, plus validated end-user context — with no JavaScript, using only policy conditions and regexes.</p>
+
+      <table class="policy">
+        <thead><tr><th>Name</th><th>Type</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>RF-InvalidInteractionId</td><td>RaiseFault</td><td>400 when a present <code>x-fapi-interaction-id</code> is not an RFC 4122 UUID.</td></tr>
+          <tr><td>AM-InteractionId</td><td>AssignMessage</td><td>Echo the caller's id or mint <code>{messageid}</code>; publish <code>fapi.interaction.id</code> and re-set the request header.</td></tr>
+          <tr><td>RF-InvalidCustomerIp</td><td>RaiseFault</td><td>400 when a present <code>x-fapi-customer-ip-address</code> is not a valid IPv4 or IPv6 address.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Step order &amp; conditions</h3>
+      <ul>
+        <li><code>RF-InvalidInteractionId</code> — when the header is present <em>and</em> fails the UUID regex (<code>8-4-4-4-12</code> hex). Absent is allowed.</li>
+        <li><code>AM-InteractionId</code> — always; <code>Ref</code> the caller header, <code>Value</code> falls back to <code>{messageid}</code>, then writes <code>fapi.interaction.id</code> and the request header.</li>
+        <li><code>RF-InvalidCustomerIp</code> — when the header is present <em>and</em> fails the IPv4/IPv6 regex.</li>
+      </ul>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/AM-InteractionId.xml</span><span class="code-lang">XML</span></div>
+<pre><code>&lt;<span class="tok-tag">AssignVariable</span>&gt;
+  &lt;<span class="tok-tag">Name</span>&gt;fapi.interaction.id&lt;/<span class="tok-tag">Name</span>&gt;
+  &lt;<span class="tok-tag">Ref</span>&gt;request.header.x-fapi-interaction-id&lt;/<span class="tok-tag">Ref</span>&gt;   <span class="tok-cmt">&lt;!-- echo caller's id --&gt;</span>
+  &lt;<span class="tok-tag">Value</span>&gt;{messageid}&lt;/<span class="tok-tag">Value</span>&gt;                       <span class="tok-cmt">&lt;!-- else mint a unique id --&gt;</span>
+&lt;/<span class="tok-tag">AssignVariable</span>&gt;</code></pre>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">FAPI relevance &amp; threat</span>
+          <p>A single, validated <code>fapi.interaction.id</code> threads through every log line and every fault envelope, making cross-system incident forensics possible. Strict UUID / IP validation is also <strong>input hygiene</strong>: it rejects header values crafted to inject content into logs or downstream systems, and the value is reused (not re-derived) so faults always correlate.</p>
+        </div>
+      </div>
+
+      <h3>Configuration knobs</h3>
+      <ul>
+        <li>The UUID and IPv4/IPv6 regexes in <code>default.xml</code> — already strict; adjust only if your profile differs.</li>
+        <li>Extend with other OB headers (e.g. <code>x-fapi-auth-date</code>, <code>x-fapi-financial-id</code>) following the same present-and-invalid pattern.</li>
+      </ul>
+
+      <hr>
+
+      <h2>Production hardening checklist</h2>
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3 2.5 20h19L12 3Z" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Repoint these placeholders before any real deployment</span>
+          <p>Every cryptographic anchor below is a non-production placeholder.</p>
+        </div>
+      </div>
+      <ul>
+        <li><strong>JWKS / issuer / audience</strong> — <code>auth.example.com</code> URIs, <code>Issuer</code>, and <code>Audience</code> in <code>VJWT-AccessToken</code>; the signing JWKS in <code>VJWS-Request</code>.</li>
+        <li><strong>Algorithm</strong> — promote <code>VJWT-AccessToken</code> from <code>RS256</code> to <code>PS256</code> to match the FAPI-advanced preference (JWS and JWE are already on the FAPI algorithms).</li>
+        <li><strong>JWE keys</strong> — supply <code>private.jwe.key</code> / <code>public.jwe.key</code> from an encrypted KVM; remove the <code>REPLACE_WITH_KVM_VALUE_*</code> fallbacks' reliance.</li>
+        <li><strong>Enforce, don't skip</strong> — make <code>x-jws-signature</code> mandatory on write/payment proxies.</li>
+        <li><strong>Cert header</strong> — confirm the LB's forwarded-client-cert header name matches the fallbacks in <code>certBinding.js</code>.</li>
+      </ul>
+
+      <blockquote>Each control is one shared flow you can deploy, test, and reason about in isolation — yet together they compose the full FAPI 1.0 Advanced posture. See the per-flow pages in the sidebar for the complete policy walkthroughs.</blockquote>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

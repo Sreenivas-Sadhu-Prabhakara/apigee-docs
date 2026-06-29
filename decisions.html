@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>Build decisions — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html" class="active">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <p class="eyebrow">Project · engineering log</p>
+      <h1>Build decisions</h1>
+
+      <div class="answer">
+        <p>Apigee Docs was <strong>co-designed against a single source of truth</strong> —
+        <code>BLUEPRINT.md</code> — which locks six decisions and records the exact trial-org
+        constraints that shaped them. The dominant constraint is IAM: the build account holds only
+        <code>roles/apigee.admin</code>, so the chassis is fully deployable by hand with a personal
+        token, but the GitHub Actions deploy job is <strong>deliberately inert</strong> behind a
+        variable guard until a one-time IAM elevation creates the service account and Workload
+        Identity pool. Everything else — a 10-flow chassis plus one reference proxy, an
+        <code>AssignMessage</code> mock with no backend, conditional security steps that keep the
+        demo <code>GET</code> flowing — follows from running on a shared, time-boxed eval org with
+        the fewest possible permissions. This page is the honest log: what was locked, why, and
+        every gotcha solved on the real deploy.</p>
+      </div>
+
+      <p class="lead">Read this page if you want the <em>reasoning</em> behind the artifacts. The
+      flow pages tell you what each control does; this one tells you why the project is shaped the
+      way it is, and what was actually fought during the build.</p>
+
+      <h2>The co-design approach</h2>
+      <p>Before any policy XML was written, the project and its owner agreed a blueprint and froze it
+      in the private repo as <code>BLUEPRINT.md</code> with a single rule: <em>this file is the
+      source of truth for why the project is shaped the way it is.</em> Decisions were taken once,
+      written down with their rationale, and then implemented to the letter — so the artifacts and
+      the documentation never drift from the intent. Every claim on this site is traceable back to a
+      locked decision or to a verified environment fact.</p>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.5h.01"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Two repos, on purpose</span>
+          <p>The split is itself a locked decision: a <strong>private</strong> code-and-pipeline repo
+          (<code>apigee-bank-chassis</code>) and a <strong>public</strong> docs repo
+          (<code>apigee-docs</code>). Deployable artifacts and CI/CD stay private; the
+          <em>how-it-works</em> is open for learning. This page lives in the public repo and quotes
+          the private one verbatim.</p>
+        </div>
+      </div>
+
+      <h2>The trial-org context</h2>
+      <p>Apigee Docs targets a real, verified Apigee X org — not a sandbox of convenience. The
+      constraints below are the ones that actually moved the design.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Fact</th><th>Value</th><th>Consequence for the build</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Org / project</td>
+            <td><code>your-apigee-project</code> (CLOUD, no. PROJECT_NUMBER)</td>
+            <td>Single hosted org; all artifacts deploy here.</td>
+          </tr>
+          <tr>
+            <td>Environment</td>
+            <td><code>eval</code> · analytics region <code>asia-south1</code></td>
+            <td>One environment; <code>deploy.sh</code> defaults to it.</td>
+          </tr>
+          <tr>
+            <td>Trial clock</td>
+            <td>~60-day eval, expires ~late July 2026</td>
+            <td>No auto-deploy; triggers are manual / tag-gated.</td>
+          </tr>
+          <tr>
+            <td>Build-account IAM</td>
+            <td><code>roles/apigee.admin</code> only</td>
+            <td>Can deploy by hand; cannot create SA / WIF — deploy job stays inert.</td>
+          </tr>
+          <tr>
+            <td>Tooling</td>
+            <td>apigeecli 2.17.0 · gcloud · gh · Maven 3.8.6 · Java 25 · Node 25</td>
+            <td>apigeecli drives all imports; no Maven Apigee plugin needed.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>The locked decisions</h2>
+      <p>Six decisions, taken up front and not revisited. Each trades a more elaborate option for one
+      that is reusable, demonstrable, and survivable on a low-permission trial clock.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Decision</th><th>Choice</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>OB standard</td>
+            <td>UK Open Banking + FAPI 1.0 Advanced</td>
+            <td>Matches existing <code>openbank-bian</code> / <code>apigeex-training</code> work — most reusable, highest signal.</td>
+          </tr>
+          <tr>
+            <td>Repo split</td>
+            <td>Private code + public docs</td>
+            <td>Ship the pipeline privately; open the explanation for learning.</td>
+          </tr>
+          <tr>
+            <td>Deploy path</td>
+            <td>GitHub Actions CI/CD (WIF), deploy job inert</td>
+            <td>Account holds only <code>apigee.admin</code> — cannot yet create SA / WIF pool.</td>
+          </tr>
+          <tr>
+            <td>First-pass scope</td>
+            <td>Full 10-flow fleet + reference proxy</td>
+            <td>A comprehensive chassis from day one, not a toy.</td>
+          </tr>
+          <tr>
+            <td>CI/CD trigger</td>
+            <td><code>workflow_dispatch</code> + <code>v*</code> tags</td>
+            <td>Safe on a shared eval org on a trial clock — never on every push.</td>
+          </tr>
+          <tr>
+            <td>Mock target</td>
+            <td>Apigee <code>AssignMessage</code> mock response</td>
+            <td>Zero external dependencies and zero extra GCP permissions.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Build phases</h2>
+      <p>The work ran as six ordered phases. Artifacts were generated and then adversarially
+      re-verified against the real Apigee schema before deploy.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>Phase 0 · Foundations <span class="chip ok">done</span></h4>
+          <p>Install apigeecli, scaffold the repo, vendor the crypto library
+          (<code>jsrsasign</code>) into <code>tools/vendor/</code>.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Phase 1 · Artifact fleet <span class="chip ok">done</span></h4>
+          <p>Author the 10 shared flows and the <code>bank-accounts-v1</code> reference proxy —
+          generate, then adversarially verify XML and cross-references.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Phase 2 · Docs site <span class="chip teal">in progress</span></h4>
+          <p>MINTO / MECE static HTML on the shared design system, published from the public repo.
+          This page is part of it.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Phase 3 · Repos &amp; Pages <span class="chip teal">in progress</span></h4>
+          <p>Push the private code repo and the public docs repo; enable GitHub Pages on the docs
+          repo.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Phase 4 · Deploy to <code>eval</code> <span class="chip ok">done</span></h4>
+          <p>Deploy shared flows first, then the proxy; smoke-test that an unauthenticated request
+          returns a <span class="chip errst">401</span> in OB error format.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Phase 5 · CI/CD + IAM guide <span class="chip ok">done</span></h4>
+          <p>Ship the WIF pipeline (inert) and the exact IAM-elevation runbook needed to activate
+          it.</p>
+        </div>
+      </div>
+
+      <h2>Engineering log — gotchas solved</h2>
+      <p>The honest part. Each item below is a real obstacle hit during the build or the deploy, and
+      the decision that resolved it.</p>
+
+      <h3>Shared flows must exist before the proxy</h3>
+      <p>The reference proxy's <code>PreFlow</code> is a list of <code>FlowCallout</code> steps that
+      reference shared flows <em>by name</em>. If those flows are not already present in the target
+      environment, the proxy import fails. <code>deploy.sh</code> therefore deploys all ten flows
+      first, in order, and only then the proxy.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">tools/deploy.sh</span><span class="code-lang">bash</span></div>
+<pre><code><span class="tok-cmt"># Shared flows are deployed FIRST (the reference proxy's FlowCallouts</span>
+<span class="tok-cmt"># require them to already exist in the target environment), then the proxy.</span>
+<span class="tok-key">for</span> sf <span class="tok-key">in</span> <span class="tok-str">"${SHARED_FLOWS[@]}"</span>; <span class="tok-key">do</span>
+  apigeecli sharedflows create bundle -n <span class="tok-str">"$sf"</span> ... --ovr --wait
+<span class="tok-key">done</span>
+apigeecli apis create bundle -n <span class="tok-str">"bank-accounts-v1"</span> ... --ovr --wait</code></pre>
+      </div>
+
+      <h3>The crypto library has to ride inside the bundle</h3>
+      <p>Two flows do JOSE work in JavaScript — <code>sf-jwe</code> (JWE decrypt) and
+      <code>sf-mtls-binding</code> (certificate-thumbprint check). Apigee JS callouts cannot fetch
+      dependencies at runtime, so the 342&nbsp;KB <code>jsrsasign-all-min.js</code> must be a bundled
+      resource. It is vendored once in <code>tools/vendor/</code> and staged into each bundle's
+      <code>resources/jsc/</code> at deploy time, then loaded ahead of the policy's own script via an
+      ordered <code>IncludeURL</code>.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">sf-jwe · policies/JS-DecryptJWE.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;Javascript</span> <span class="tok-key">name</span>=<span class="tok-str">"JS-DecryptJWE"</span> <span class="tok-key">timeLimit</span>=<span class="tok-str">"5000"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;IncludeURL&gt;</span>jsc://jsrsasign-all-min.js<span class="tok-tag">&lt;/IncludeURL&gt;</span>  <span class="tok-cmt">&lt;!-- loads first --&gt;</span>
+  <span class="tok-tag">&lt;ResourceURL&gt;</span>jsc://jwe.js<span class="tok-tag">&lt;/ResourceURL&gt;</span>
+<span class="tok-tag">&lt;/Javascript&gt;</span></code></pre>
+      </div>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 21 19H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Include order is load-bearing</span>
+          <p><code>IncludeURL</code> resources are evaluated before the <code>ResourceURL</code>
+          script, so <code>jsrsasign</code> is defined before <code>jwe.js</code> / <code>certBinding.js</code>
+          run. Reversing them produces a runtime <code>ReferenceError</code>, not an import error —
+          it only fails when the conditional step actually fires.</p>
+        </div>
+      </div>
+
+      <h3>You cannot write <code>--</code> inside an XML comment</h3>
+      <p>The <code>VJWT-AccessToken</code> policy documents how to swap the JWKS URI for an inline PEM
+      key for offline testing. A PEM armor line — the BEGIN/END PUBLIC KEY banner — contains a run of
+      dashes, and a double hyphen is illegal inside an XML comment. The comment therefore omits the
+      dash banner and says so explicitly. This is exactly the class of error that
+      <code>validate.sh</code> catches before Apigee ever sees the bundle.</p>
+
+      <h3>A policy's root <code>name=</code> must equal its filename</h3>
+      <p>Apigee binds a policy file to the bundle by its root-element <code>name</code> attribute, and
+      that must match the file's basename or the import is rejected with an unhelpful error.
+      <code>validate.sh</code> enforces this statically — alongside step&nbsp;↔&nbsp;policy&nbsp;↔&nbsp;manifest
+      cross-references — so the failure surfaces in CI, not on a precious trial-org deploy.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">tools/validate.sh — cross-reference check</span><span class="code-lang">bash</span></div>
+<pre><code><span class="tok-cmt"># each policy file's root name attr must equal its filename</span>
+fn=$(basename <span class="tok-str">"$pf"</span> .xml)
+grep -qE <span class="tok-str">"name=\"$fn\""</span> <span class="tok-str">"$pf"</span> || echo <span class="tok-str">"  ✗ root name != filename"</span></code></pre>
+      </div>
+
+      <h3>Conditional security so the demo <code>GET</code> still flows</h3>
+      <p>Three of the strongest controls are conditioned on the request, not always-on:
+      <code>FC-JwsValidation</code> runs only when <code>x-jws-signature</code> is present;
+      <code>FC-MtlsBinding</code> only with a <code>cnf</code> claim or forwarded client cert;
+      <code>FC-Jwe</code> only for JOSE/JWE content types. This lets the no-body demo <code>GET</code>
+      pass while leaving every control wired and ready. The trade-off is documented in the policy
+      itself — <em>production write/payment endpoints MUST enforce presence</em>.</p>
+
+      <div class="callout danger">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">This is a demo affordance, not a production posture</span>
+          <p>A request with no signature today passes the JWS step <em>because the step is
+          conditional</em>, not because the signature was checked. Before production, the conditions on
+          write and payment endpoints must be inverted to reject when the proof is absent.</p>
+        </div>
+      </div>
+
+      <h3>Zero external dependencies for the target</h3>
+      <p>Because the build account has no permission to stand up backends or target servers, the
+      reference proxy ships a <code>RouteRule name="no-target"</code> and answers from an
+      <code>AssignMessage</code> that returns a mock OB Account list. The whole chassis is therefore
+      demonstrable end-to-end with nothing but <code>roles/apigee.admin</code>.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">bank-accounts-v1 · proxies/default.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;RouteRule</span> <span class="tok-key">name</span>=<span class="tok-str">"no-target"</span><span class="tok-tag">/&gt;</span>          <span class="tok-cmt">&lt;!-- no backend; mock answers --&gt;</span>
+<span class="tok-tag">&lt;DefaultFaultRule</span> <span class="tok-key">name</span>=<span class="tok-str">"default-fault"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;Step&gt;&lt;Name&gt;</span>FC-ErrorHandling<span class="tok-tag">&lt;/Name&gt;&lt;/Step&gt;</span>
+<span class="tok-tag">&lt;/DefaultFaultRule&gt;</span></code></pre>
+      </div>
+
+      <h3>The IAM blocker — and why the deploy job is inert</h3>
+      <p>The single largest constraint. The signed-in account holds only
+      <code>roles/apigee.admin</code> — enough to import and deploy with a personal access token, but
+      <em>not</em> enough to create the service account and Workload Identity pool that keyless GitHub
+      Actions auth requires. So the pipeline is split in two: <code>ci-validate.yml</code> runs on
+      every push with no credentials, while <code>deploy-apigee.yml</code> is gated off until a
+      human performs the one-time elevation.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">.github/workflows/deploy-apigee.yml</span><span class="code-lang">YAML</span></div>
+<pre><code>permissions:
+  id-token: write   <span class="tok-cmt"># keyless WIF — no SA JSON keys ever stored</span>
+jobs:
+  deploy:
+    <span class="tok-cmt"># INERT until IAM elevation + WIF setup is complete</span>
+    <span class="tok-key">if:</span> ${{ vars.APIGEE_DEPLOY_ENABLED == <span class="tok-str">'true'</span> }}</code></pre>
+      </div>
+
+      <p>Activation is a documented runbook, not guesswork: elevate IAM in the console, run
+      <code>tools/setup-wif.sh</code> (it creates the deploy SA, the pool/provider pinned by
+      <code>attribute.repository</code> to the exact repo, and the impersonation binding), then set
+      the four repo variables it prints — including <code>APIGEE_DEPLOY_ENABLED=true</code>. No
+      service-account JSON key is ever created; auth is short-lived OIDC.</p>
+
+      <h2>Production knobs left as placeholders</h2>
+      <p>The chassis is wired correctly but intentionally points at example values. These are the
+      deliberate placeholders — change them per environment (KVM-backed in production) before this is
+      anything but a demo.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Placeholder</th><th>Current value</th><th>Production target</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Access-token algorithm</td>
+            <td><code>RS256</code> (in <code>VJWT-AccessToken</code>)</td>
+            <td><code>PS256</code> — the FAPI-preferred RSASSA-PSS variant.</td>
+          </tr>
+          <tr>
+            <td>JWKS / issuer / audience</td>
+            <td><code>auth.example.com</code> · <code>accounts-api</code></td>
+            <td>Real IdP JWKS, issuer, and audience for the environment.</td>
+          </tr>
+          <tr>
+            <td>Signing JWKS (JWS)</td>
+            <td><code>.../signing-jwks.json</code> placeholder</td>
+            <td>The TPP / OB signing key set, KVM-backed.</td>
+          </tr>
+          <tr>
+            <td>Spike arrest</td>
+            <td><code>30ps</code> per <code>client.ip</code></td>
+            <td>Tune to real SLAs.</td>
+          </tr>
+          <tr>
+            <td>Quota</td>
+            <td><code>1000</code>/hour, keyed on <code>client.ip</code></td>
+            <td>Key on <code>apigee.client_id</code> (post-identity) at real limits.</td>
+          </tr>
+          <tr>
+            <td>Conditional crypto steps</td>
+            <td>Run only when the proof is present</td>
+            <td>Mandatory on write / payment endpoints.</td>
+          </tr>
+          <tr>
+            <td>Target</td>
+            <td><code>AM-MockAccounts</code> + <code>no-target</code></td>
+            <td>Real backend / target server.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.5h.01"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Where this goes next</span>
+          <p>The remaining work is logistical, not architectural: finish publishing the two repos and
+          GitHub Pages (Phase&nbsp;3), then — when ready — perform the IAM elevation to flip the deploy
+          job live. See <a href="cicd-iam.html">CI/CD &amp; IAM</a> for the exact activation steps and
+          <a href="deployment.html">Deployment &amp; testing</a> for the local deploy and 401
+          smoke-test.</p>
+        </div>
+      </div>
+
+      <p class="note">Every decision, value, and gotcha on this page is quoted from the private
+      <code>apigee-bank-chassis</code> repository — <code>BLUEPRINT.md</code>, the policy XML, and the
+      <code>tools/</code> and <code>.github/workflows/</code> scripts as built.</p>
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

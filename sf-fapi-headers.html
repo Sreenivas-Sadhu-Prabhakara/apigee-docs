@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>sf-fapi-headers — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html" class="active">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+
+      <p class="eyebrow">Shared flow</p>
+      <h1>sf-fapi-headers</h1>
+
+      <div class="answer">
+        <p><code>sf-fapi-headers</code> validates and normalizes the two FAPI HTTP request
+        headers that flow through every protected API: <code>x-fapi-interaction-id</code> and
+        <code>x-fapi-customer-ip-address</code>. It does three things, in order — reject a
+        present-but-malformed interaction id, then <em>echo-or-generate</em> the interaction id
+        and publish it on the <code>fapi.interaction.id</code> context variable, then reject a
+        present-but-malformed customer IP. The result is a guaranteed, downstream-readable
+        correlation id and a guarantee that any caller-supplied IP is syntactically a valid
+        IPv4/IPv6 address. It is pure policy — <strong>no JavaScript</strong> — using two
+        <code>RaiseFault</code> policies gated on regex conditions and one
+        <code>AssignMessage</code>.</p>
+      </div>
+
+      <div class="pillrow">
+        <span class="layer-chip">FAPI 1.0 Advanced</span>
+        <span class="layer-chip">UK Open Banking</span>
+        <span class="chip teal">Request flow</span>
+        <span class="chip plain">No JavaScript</span>
+        <span class="chip plain">ConfigurationVersion 4.0</span>
+      </div>
+
+      <h2>Where it sits</h2>
+      <p class="lead">This is an early, cheap, deterministic gate. It runs after transport-level
+      preflight and before any cryptographic work, so that every later policy — and every error
+      response — can attach the same <code>x-fapi-interaction-id</code> for end-to-end tracing.</p>
+
+      <p>The bundle declares three policies and a single <code>default</code> sub-flow:</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>RF-InvalidInteractionId</td>
+            <td>RaiseFault</td>
+            <td>Return <code>400</code> when <code>x-fapi-interaction-id</code> is present but is not a UUID (8-4-4-4-12 hex form). Echoes the offending value back in the fault for traceability.</td>
+          </tr>
+          <tr>
+            <td>AM-InteractionId</td>
+            <td>AssignMessage</td>
+            <td>Echo the caller's interaction id when present, otherwise fall back to the built-in <code>{messageid}</code>. Publishes the resolved value on <code>fapi.interaction.id</code> and re-sets it on the request header.</td>
+          </tr>
+          <tr>
+            <td>RF-InvalidCustomerIp</td>
+            <td>RaiseFault</td>
+            <td>Return <code>400</code> when <code>x-fapi-customer-ip-address</code> is present but is not a valid IPv4 or IPv6 literal. Uses the now-normalized <code>fapi.interaction.id</code> in the fault.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Step order and conditions</h2>
+      <p>The <code>default</code> sub-flow runs the three steps top to bottom. Both
+      <code>RaiseFault</code> steps are <em>conditional</em> — they only fire when the relevant
+      header is both present and malformed; <code>AM-InteractionId</code> is unconditional.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>Reject a malformed interaction id (conditional)</h4>
+          <p><code>RF-InvalidInteractionId</code> fires only when the header is non-null
+          <em>and</em> fails the UUID regex. Crucially the condition uses
+          <code>!= null</code>, so an <strong>absent</strong> header is allowed through —
+          FAPI permits the caller to omit it and have the gateway mint one. The regex is matched
+          with the Apigee JavaRegex operator <code>!~~</code> (does-not-match).</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Echo or generate, then publish (unconditional)</h4>
+          <p><code>AM-InteractionId</code> always runs. It resolves <code>fapi.interaction.id</code>
+          from the request header first; because <code>IgnoreUnresolvedVariables</code> is
+          <code>true</code>, an absent header makes the policy fall through to the
+          <code>&lt;Value&gt;{messageid}&lt;/Value&gt;</code> template. The resolved id is then
+          written back onto the request header so upstreams and later policies see a single,
+          consistent value.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Reject a malformed customer IP (conditional)</h4>
+          <p><code>RF-InvalidCustomerIp</code> fires only when
+          <code>x-fapi-customer-ip-address</code> is non-null and matches neither the IPv4 nor
+          the IPv6 pattern. By the time this step can fault, <code>fapi.interaction.id</code> is
+          already populated, so its error response carries the normalized correlation id.</p>
+        </div>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">sharedflows/default.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-cmt">&lt;!-- 1. Reject a malformed x-fapi-interaction-id only when the header is present. --&gt;</span>
+<span class="tok-tag">&lt;Step&gt;</span>
+  <span class="tok-tag">&lt;Name&gt;</span>RF-InvalidInteractionId<span class="tok-tag">&lt;/Name&gt;</span>
+  <span class="tok-tag">&lt;Condition&gt;</span>(request.header.x-fapi-interaction-id != null) and
+    (request.header.x-fapi-interaction-id !~~
+     "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")<span class="tok-tag">&lt;/Condition&gt;</span>
+<span class="tok-tag">&lt;/Step&gt;</span>
+<span class="tok-cmt">&lt;!-- 2. Echo or generate the id, publish fapi.interaction.id, set the request header. --&gt;</span>
+<span class="tok-tag">&lt;Step&gt;</span>
+  <span class="tok-tag">&lt;Name&gt;</span>AM-InteractionId<span class="tok-tag">&lt;/Name&gt;</span>
+<span class="tok-tag">&lt;/Step&gt;</span>
+<span class="tok-cmt">&lt;!-- 3. Reject a malformed x-fapi-customer-ip-address only when present (IPv4 or IPv6). --&gt;</span>
+<span class="tok-tag">&lt;Step&gt;</span>
+  <span class="tok-tag">&lt;Name&gt;</span>RF-InvalidCustomerIp<span class="tok-tag">&lt;/Name&gt;</span>
+  <span class="tok-tag">&lt;Condition&gt;</span>(request.header.x-fapi-customer-ip-address != null) and
+    (request.header.x-fapi-customer-ip-address !~~ "...IPv4|IPv6 regex...")<span class="tok-tag">&lt;/Condition&gt;</span>
+<span class="tok-tag">&lt;/Step&gt;</span></code></pre>
+      </div>
+
+      <h2>The echo-or-generate trick</h2>
+      <p>The interaction-id normalization is the heart of this flow. A single
+      <code>AssignVariable</code> with both a <code>Ref</code> and a <code>Value</code> gives you a
+      try-header-then-fall-back-to-generated semantic for free:</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/AM-InteractionId.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;AssignMessage</span> <span class="tok-key">name</span>=<span class="tok-str">"AM-InteractionId"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;IgnoreUnresolvedVariables&gt;</span>true<span class="tok-tag">&lt;/IgnoreUnresolvedVariables&gt;</span>
+  <span class="tok-tag">&lt;AssignVariable&gt;</span>
+    <span class="tok-tag">&lt;Name&gt;</span>fapi.interaction.id<span class="tok-tag">&lt;/Name&gt;</span>
+    <span class="tok-tag">&lt;Ref&gt;</span>request.header.x-fapi-interaction-id<span class="tok-tag">&lt;/Ref&gt;</span>
+    <span class="tok-tag">&lt;Value&gt;</span>{messageid}<span class="tok-tag">&lt;/Value&gt;</span>
+  <span class="tok-tag">&lt;/AssignVariable&gt;</span>
+  <span class="tok-tag">&lt;Set&gt;&lt;Headers&gt;</span>
+    <span class="tok-tag">&lt;Header</span> <span class="tok-key">name</span>=<span class="tok-str">"x-fapi-interaction-id"</span><span class="tok-tag">&gt;</span>{fapi.interaction.id}<span class="tok-tag">&lt;/Header&gt;</span>
+  <span class="tok-tag">&lt;/Headers&gt;&lt;/Set&gt;</span>
+  <span class="tok-tag">&lt;AssignTo</span> <span class="tok-key">createNew</span>=<span class="tok-str">"false"</span> <span class="tok-key">type</span>=<span class="tok-str">"request"</span><span class="tok-tag">/&gt;</span>
+<span class="tok-tag">&lt;/AssignMessage&gt;</span></code></pre>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">Why <code>{messageid}</code> and not a fresh UUID policy?</span>
+          <p>Apigee's built-in <code>{messageid}</code> is a guaranteed-unique id minted per
+          request in UUID form, so it satisfies the FAPI requirement to generate an interaction id
+          when the caller omits one — without adding a <code>GenerateUUID</code> step. If your
+          OBIE conformance suite insists on a strictly RFC 4122-versioned UUID, swap the
+          <code>&lt;Value&gt;</code> for a generated UUID variable (see knobs below).</p>
+        </div>
+      </div>
+
+      <h2>FAPI relevance</h2>
+      <p>FAPI 1.0 Advanced and the UK Open Banking Read/Write standard require ASPSPs to support
+      these correlation and forwarding headers. This flow encodes those rules at the edge:</p>
+
+      <ul>
+        <li><strong>Play-back-or-generate.</strong> The profile says: if the request carries an
+        <code>x-fapi-interaction-id</code>, the ASPSP must play it back on the response; otherwise
+        it must set one. Publishing to <code>fapi.interaction.id</code> lets
+        <a href="sf-error-handling.html">sf-error-handling</a> and
+        <a href="sf-logging.html">sf-logging</a> echo the same value on every response and log line.</li>
+        <li><strong>Optional, but validated when present.</strong> Both headers are optional on the
+        wire, so the gate never rejects a missing header — it only rejects a syntactically broken
+        one. This matches the FAPI stance that <code>x-fapi-customer-ip-address</code> is supplied
+        by the client only when a customer is present.</li>
+        <li><strong>OBIE-shaped errors.</strong> Both faults return the UK OBIE error envelope with
+        <code>ErrorCode</code> <code>UK.OBIE.Header.Invalid</code>, a <code>Code</code> of
+        <code>400</code>, and the interaction id in the <code>Id</code> field.</li>
+      </ul>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/RF-InvalidInteractionId.xml — FaultResponse payload</span><span class="code-lang">JSON</span></div>
+<pre><code>{
+  "Code": "400",
+  "Id": "{request.header.x-fapi-interaction-id}",
+  "Message": "Request failed FAPI header validation.",
+  "Errors": [
+    {
+      "ErrorCode": "UK.OBIE.Header.Invalid",
+      "Message": "The x-fapi-interaction-id header must be a valid UUID (RFC 4122 8-4-4-4-12 hexadecimal form)."
+    }
+  ]
+}</code></pre>
+      </div>
+
+      <div class="callout warn">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">Two different id sources in the two faults</span>
+          <p><code>RF-InvalidInteractionId</code> runs <em>before</em> <code>AM-InteractionId</code>,
+          so it can only echo the raw, invalid <code>{request.header.x-fapi-interaction-id}</code>
+          back in <code>Id</code>. <code>RF-InvalidCustomerIp</code> runs <em>after</em>
+          normalization, so it uses the clean <code>{fapi.interaction.id}</code>. This is
+          intentional, not an inconsistency.</p>
+        </div>
+      </div>
+
+      <h2>Configuration knobs for production</h2>
+      <p>This flow ships with sensible defaults and very few placeholders. The items below are the
+      decisions you should consciously confirm before promoting beyond the eval environment.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Knob</th><th>Where</th><th>Default &amp; production guidance</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>UUID strictness</td>
+            <td>default.xml regex</td>
+            <td>Default accepts any <code>8-4-4-4-12</code> hex string. For strict RFC 4122 also constrain the version nibble (<code>[1-5]</code>) and variant (<code>[89abAB]</code>) if your conformance suite requires it.</td>
+          </tr>
+          <tr>
+            <td>Generated id format</td>
+            <td>AM-InteractionId &lt;Value&gt;</td>
+            <td>Default <code>{messageid}</code>. To force a freshly generated v4 UUID, add a <code>GenerateUUID</code> (or KVM/JS) producer and reference its output variable here instead.</td>
+          </tr>
+          <tr>
+            <td>Customer-IP family</td>
+            <td>RF-InvalidCustomerIp regex</td>
+            <td>Accepts dotted-quad IPv4 and the full IPv6 grammar. Tighten or drop IPv6 only if your estate is IPv4-only; the regex does not currently accept IPv6 zone-id (<code>%eth0</code>) suffixes.</td>
+          </tr>
+          <tr>
+            <td>Error namespace</td>
+            <td>both RaiseFault payloads</td>
+            <td><code>UK.OBIE.Header.Invalid</code> — keep aligned with your OBIE error catalogue and the envelope used by <a href="sf-error-handling.html">sf-error-handling</a>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Contract: what downstream gets</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h4>Always true after this flow</h4>
+          <p><code>fapi.interaction.id</code> is set to a valid id (echoed or minted), and
+          <code>request.header.x-fapi-interaction-id</code> equals it. Later flows and the response
+          can rely on a single correlation id.</p>
+        </div>
+        <div class="card">
+          <h4>Never happens</h4>
+          <p>The flow never rejects an <em>absent</em> header and never adds a customer-IP value of
+          its own — <code>x-fapi-customer-ip-address</code> is left exactly as the caller sent it
+          (or omitted).</p>
+        </div>
+      </div>
+
+      <div class="note">Source of truth:
+      <code>shared-flows/sf-fapi-headers/sharedflowbundle/</code> — three policies
+      (<code>RF-InvalidInteractionId</code>, <code>AM-InteractionId</code>,
+      <code>RF-InvalidCustomerIp</code>) wired by <code>sharedflows/default.xml</code>.</div>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

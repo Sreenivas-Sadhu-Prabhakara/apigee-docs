@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>sf-logging — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html" class="active">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+
+      <p class="eyebrow">Shared flow</p>
+      <h1>sf-logging</h1>
+
+      <div class="answer">
+        <p><code>sf-logging</code> produces a structured, redacted log line for every
+        request without needing a Google Cloud service account. It is a single
+        <code>AssignMessage</code> policy — <code>AM-LogContext</code> — that writes a
+        compact JSON document into the <code>audit.log</code> flow variable (plus a
+        discrete <code>audit.log.interactionId</code> variable), so the record is visible
+        in Apigee trace/debug and analytics under nothing more than
+        <code>roles/apigee.admin</code>. Real shipping to Google Cloud Logging is an
+        <em>optional</em> upgrade: the <code>ML-CloudLogging</code> <code>MessageLogging</code>
+        policy lives <strong>outside</strong> the deployed bundle because it requires a
+        deploy-time service account holding <code>roles/logging.logWriter</code>. Both paths
+        deliberately omit secrets — the <code>Authorization</code> bearer token and the
+        <code>x-jws-signature</code> detached signature are never logged.</p>
+      </div>
+
+      <div class="pillrow">
+        <span class="layer-chip">FAPI 1.0 Advanced</span>
+        <span class="layer-chip">UK Open Banking</span>
+        <span class="chip teal">Response flow</span>
+        <span class="chip plain">No JavaScript</span>
+        <span class="chip gold">SA-free by default</span>
+        <span class="chip plain">ConfigurationVersion 4.0</span>
+      </div>
+
+      <h2>Where it sits</h2>
+      <p class="lead">This is the observability tail of the chassis. It is designed to run on
+      the response path, after every other flow has executed, so the log line can capture the
+      resolved correlation id and the final <code>response.status.code</code> for the
+      request — success or fault alike.</p>
+
+      <p>The deployed bundle is deliberately minimal: it declares a single policy and one
+      <code>default</code> sub-flow with a single step.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>AM-LogContext</td>
+            <td>AssignMessage</td>
+            <td>Build a redacted JSON log document and assign it to the <code>audit.log</code> flow variable; also publish <code>audit.log.interactionId</code> from <code>fapi.interaction.id</code>. SA-free — surfaces in trace and built-in analytics.</td>
+          </tr>
+          <tr>
+            <td>ML-CloudLogging</td>
+            <td>MessageLogging <span class="chip warnst">not deployed</span></td>
+            <td>Optional upgrade. Ships the same structured, redacted payload to Google Cloud Logging under <code>projects/&hellip;/logs/apigee</code>. Held in <code>optional-cloudlogging/</code> — see below.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout info">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">No <code>StatisticsCollector</code> here</span>
+          <p>The bundle <code>&lt;Description&gt;</code> records a build decision: custom analytics
+          via <code>StatisticsCollector</code> is intentionally omitted because it is
+          <em>not supported by this Apigee org's bundle validator</em>. The discrete
+          <code>audit.log.interactionId</code> variable is the SA-free substitute that can later
+          be promoted into a CustomReport.</p>
+        </div>
+      </div>
+
+      <h2>What AM-LogContext does, step by step</h2>
+      <p>The <code>default</code> sub-flow has exactly one unconditional step,
+      <code>AM-LogContext</code>. Inside that one policy, two <code>AssignVariable</code>
+      operations run in order.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>Assemble the structured log line</h4>
+          <p>An <code>AssignVariable</code> with a <code>&lt;Template&gt;</code> renders a
+          single-line JSON object into <code>audit.log</code>. The fields are message
+          metadata only — interaction id, verb, path, status, API product, proxy and
+          environment — drawn from Apigee context variables. No request body, no headers
+          that could carry a secret.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Publish the correlation id discretely</h4>
+          <p>A second <code>AssignVariable</code> copies <code>fapi.interaction.id</code>
+          (normalized upstream by <a href="sf-fapi-headers.html">sf-fapi-headers</a>) into
+          <code>audit.log.interactionId</code>. Keeping the id as its own flat variable —
+          not just embedded in the JSON string — makes it filterable in analytics and trace.</p>
+        </div>
+      </div>
+
+      <p>Two policy attributes make this safe to attach unconditionally on the response path:
+      <code>continueOnError="true"</code> means a logging hiccup can never fault the API
+      response, and <code>IgnoreUnresolvedVariables="true"</code> means any context variable
+      that is empty (for example on an early-rejected request) simply renders blank instead of
+      breaking the template.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/AM-LogContext.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;AssignMessage</span> <span class="tok-key">name</span>=<span class="tok-str">"AM-LogContext"</span> <span class="tok-key">continueOnError</span>=<span class="tok-str">"true"</span> <span class="tok-key">enabled</span>=<span class="tok-str">"true"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;DisplayName&gt;</span>AM-LogContext<span class="tok-tag">&lt;/DisplayName&gt;</span>
+  <span class="tok-tag">&lt;IgnoreUnresolvedVariables&gt;</span>true<span class="tok-tag">&lt;/IgnoreUnresolvedVariables&gt;</span>
+  <span class="tok-cmt">&lt;!-- 1. Structured, redacted JSON into audit.log --&gt;</span>
+  <span class="tok-tag">&lt;AssignVariable&gt;</span>
+    <span class="tok-tag">&lt;Name&gt;</span>audit.log<span class="tok-tag">&lt;/Name&gt;</span>
+    <span class="tok-tag">&lt;Template&gt;</span>{"interactionId":"{fapi.interaction.id}","verb":"{request.verb}",
+      "path":"{request.uri}","status":"{response.status.code}",
+      "apiproduct":"{apiproduct.name}","proxy":"{apiproxy.name}",
+      "environment":"{environment.name}"}<span class="tok-tag">&lt;/Template&gt;</span>
+  <span class="tok-tag">&lt;/AssignVariable&gt;</span>
+  <span class="tok-cmt">&lt;!-- 2. Correlation id as its own filterable variable --&gt;</span>
+  <span class="tok-tag">&lt;AssignVariable&gt;</span>
+    <span class="tok-tag">&lt;Name&gt;</span>audit.log.interactionId<span class="tok-tag">&lt;/Name&gt;</span>
+    <span class="tok-tag">&lt;Ref&gt;</span>fapi.interaction.id<span class="tok-tag">&lt;/Ref&gt;</span>
+  <span class="tok-tag">&lt;/AssignVariable&gt;</span>
+<span class="tok-tag">&lt;/AssignMessage&gt;</span></code></pre>
+      </div>
+
+      <p class="muted">The <code>&lt;Template&gt;</code> is a single physical line in the source;
+      it is wrapped above only for readability.</p>
+
+      <p>The rendered record is a flat, machine-parseable line — every field is a context
+      variable, nothing more:</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">audit.log (rendered example)</span><span class="code-lang">JSON</span></div>
+<pre><code>{
+  "interactionId": "1d8f0e2c-7b3a-4c9e-9f21-6a4b8c0d1e23",
+  "verb": "GET",
+  "path": "/open-banking/v3.1/aisp/accounts",
+  "status": "200",
+  "apiproduct": "aisp-product",
+  "proxy": "reference-proxy",
+  "environment": "eval"
+}</code></pre>
+      </div>
+
+      <h2>Secret redaction</h2>
+      <p>The most important property of this flow is what it does <strong>not</strong> contain.
+      Both the SA-free policy and the optional Cloud Logging policy log only message
+      <em>metadata</em>; they never serialize the headers that carry credentials or
+      message-integrity proofs.</p>
+
+      <div class="callout danger">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">Never logged, by design</span>
+          <p>The payload deliberately omits the <code>Authorization</code> header (the bearer
+          access token) and the <code>x-fapi</code> / <code>x-jws-signature</code> header
+          (the detached JWS that provides message integrity). Logging a bearer token would leak
+          a live credential; logging a signature would weaken the non-repudiation guarantee.
+          If you add fields, keep this rule — log identifiers, never secrets or signatures.</p>
+        </div>
+      </div>
+
+      <h2>FAPI relevance</h2>
+      <p>FAPI 1.0 Advanced and UK Open Banking demand end-to-end traceability without
+      compromising the credentials and signatures the profile relies on. This flow encodes both
+      halves of that requirement:</p>
+
+      <ul>
+        <li><strong>One correlation id, everywhere.</strong> Every log record carries
+        <code>fapi.interaction.id</code>, the same value that
+        <a href="sf-fapi-headers.html">sf-fapi-headers</a> echoes on the response and
+        <a href="sf-error-handling.html">sf-error-handling</a> stamps on faults. A single id
+        threads the client request, the gateway logs, and the response header.</li>
+        <li><strong>Status captured on the response path.</strong> Because the policy reads
+        <code>response.status.code</code>, it is intended to run after the response is set, so the
+        log line reflects the real outcome — including faulted requests, thanks to
+        <code>continueOnError</code>.</li>
+        <li><strong>Credential and signature hygiene.</strong> Redacting the bearer token and the
+        detached JWS keeps logs from becoming a secondary attack surface — a recurring FAPI
+        conformance and security-review concern.</li>
+      </ul>
+
+      <h2>Optional upgrade: ship to Google Cloud Logging</h2>
+      <p class="lead">The SA-free path gives you trace-visible structured logs today. To persist
+      and query them centrally, enable <code>ML-CloudLogging</code> — a real Cloud Logging sink
+      that was lifted out of the bundle for one concrete reason.</p>
+
+      <div class="callout warn">
+        <span class="callout-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg></span>
+        <div class="callout-body">
+          <span class="callout-title">Why it is not in the deployed bundle</span>
+          <p>Apigee X requires a service-account identity whenever a deployed revision contains a
+          Cloud-integrated policy (<code>CloudLogging</code>, <code>GoogleAuthentication</code>, &hellip;).
+          Deploying a bundle that contains <code>ML-CloudLogging</code> without one fails with:</p>
+          <p><code>Deployment of sf-logging requires a service account identity, but one was not provided.</code></p>
+          <p>With only <code>roles/apigee.admin</code> you cannot yet create or <code>actAs</code> a
+          service account, so the policy is parked in <code>optional-cloudlogging/</code> until the
+          IAM elevation in <a href="cicd-iam.html">Phase&nbsp;5</a>.</p>
+        </div>
+      </div>
+
+      <p>The optional policy mirrors the SA-free payload exactly, then adds a Cloud Logging
+      target and two indexed labels:</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">optional-cloudlogging/ML-CloudLogging.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;MessageLogging</span> <span class="tok-key">name</span>=<span class="tok-str">"ML-CloudLogging"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;CloudLogging&gt;</span>
+    <span class="tok-tag">&lt;LogName&gt;</span>projects/your-apigee-project/logs/apigee<span class="tok-tag">&lt;/LogName&gt;</span>
+    <span class="tok-tag">&lt;Message</span> <span class="tok-key">contentType</span>=<span class="tok-str">"application/json"</span><span class="tok-tag">&gt;</span>{"interactionId":"{fapi.interaction.id}",
+      "verb":"{request.verb}","path":"{request.uri}","status":"{response.status.code}",
+      "apiproduct":"{apiproduct.name}","proxy":"{apiproxy.name}",
+      "environment":"{environment.name}"}<span class="tok-tag">&lt;/Message&gt;</span>
+    <span class="tok-tag">&lt;ResourceType&gt;</span>api<span class="tok-tag">&lt;/ResourceType&gt;</span>
+    <span class="tok-tag">&lt;Labels&gt;</span>
+      <span class="tok-tag">&lt;Label&gt;&lt;Key&gt;</span>interactionId<span class="tok-tag">&lt;/Key&gt;&lt;Value&gt;</span>{fapi.interaction.id}<span class="tok-tag">&lt;/Value&gt;&lt;/Label&gt;</span>
+      <span class="tok-tag">&lt;Label&gt;&lt;Key&gt;</span>proxy<span class="tok-tag">&lt;/Key&gt;&lt;Value&gt;</span>{apiproxy.name}<span class="tok-tag">&lt;/Value&gt;&lt;/Label&gt;</span>
+    <span class="tok-tag">&lt;/Labels&gt;</span>
+  <span class="tok-tag">&lt;/CloudLogging&gt;</span>
+  <span class="tok-tag">&lt;IgnoreUnresolvedVariables&gt;</span>true<span class="tok-tag">&lt;/IgnoreUnresolvedVariables&gt;</span>
+<span class="tok-tag">&lt;/MessageLogging&gt;</span></code></pre>
+      </div>
+
+      <p>Turning it on is a three-move sequence, documented in
+      <code>optional-cloudlogging/README.md</code> and gated on the IAM work in
+      <a href="cicd-iam.html">Phase&nbsp;5</a>:</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>Create a runtime SA and grant log-writer</h4>
+          <p>Create <code>apigee-runtime</code> and bind
+          <code>roles/logging.logWriter</code> so the deployed revision's identity may write
+          Cloud Logging entries.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Move the policy back into the bundle</h4>
+          <p><code>mv optional-cloudlogging/ML-CloudLogging.xml sharedflowbundle/policies/</code>,
+          add <code>&lt;Policy&gt;ML-CloudLogging&lt;/Policy&gt;</code> to <code>sf-logging.xml</code>,
+          and add a <code>&lt;Step&gt;&lt;Name&gt;ML-CloudLogging&lt;/Name&gt;&lt;/Step&gt;</code> to
+          <code>sharedflows/default.xml</code>.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Deploy with the SA identity</h4>
+          <p>Re-deploy passing the service account with <code>apigeecli</code>'s <code>-s</code>
+          flag, so Apigee attaches the identity the Cloud-integrated policy demands.</p>
+        </div>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">Enable Cloud Logging (after IAM elevation)</span><span class="code-lang">SHELL</span></div>
+<pre class="shell">$ gcloud iam service-accounts create apigee-runtime \
+    --project your-apigee-project
+
+$ gcloud projects add-iam-policy-binding your-apigee-project \
+    --member "serviceAccount:apigee-runtime@your-apigee-project.iam.gserviceaccount.com" \
+    --role roles/logging.logWriter
+
+$ apigeecli sharedflows deploy -n sf-logging -e eval --ovr --wait \
+    -s apigee-runtime@your-apigee-project.iam.gserviceaccount.com \
+    -o your-apigee-project -t "$(gcloud auth print-access-token)"</pre>
+      </div>
+
+      <h2>Configuration knobs for production</h2>
+      <p>The flow ships ready to deploy with no required edits in the SA-free path. The items
+      below are the decisions to confirm before promoting beyond <code>eval</code> or enabling
+      the Cloud Logging sink.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Knob</th><th>Where</th><th>Default &amp; production guidance</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>GCP project / log name</td>
+            <td>ML-CloudLogging &lt;LogName&gt;</td>
+            <td>Hard-coded to <code>projects/your-apigee-project/logs/apigee</code>. Repoint to your project and log id before enabling the sink.</td>
+          </tr>
+          <tr>
+            <td>Runtime service account</td>
+            <td>deploy <code>-s</code> flag</td>
+            <td><code>apigee-runtime@&hellip;</code> with <code>roles/logging.logWriter</code>. Required for any Cloud-integrated policy; not needed for the SA-free default.</td>
+          </tr>
+          <tr>
+            <td>Log fields</td>
+            <td>AM-LogContext &lt;Template&gt; / ML-CloudLogging &lt;Message&gt;</td>
+            <td>Metadata only by default. Add fields if needed, but never the <code>Authorization</code> bearer token or the <code>x-jws-signature</code> value — keep the two payloads in sync.</td>
+          </tr>
+          <tr>
+            <td>Indexed labels</td>
+            <td>ML-CloudLogging &lt;Labels&gt;</td>
+            <td><code>interactionId</code> and <code>proxy</code>. Add labels for fields you intend to filter on at scale in Cloud Logging.</td>
+          </tr>
+          <tr>
+            <td>Custom analytics</td>
+            <td>(not present)</td>
+            <td><code>StatisticsCollector</code> is intentionally omitted (org validator limitation). Re-introduce only if your org's bundle validator accepts it.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Contract: what downstream gets</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h4>Always true after this flow</h4>
+          <p><code>audit.log</code> holds a single-line JSON record and
+          <code>audit.log.interactionId</code> holds the correlation id — both visible in
+          trace and analytics, under <code>roles/apigee.admin</code> alone.</p>
+        </div>
+        <div class="card">
+          <h4>Never happens</h4>
+          <p>No credential or signature is written to any log, the API response is never faulted
+          by a logging error (<code>continueOnError="true"</code>), and no service account is
+          required unless you opt into Cloud Logging.</p>
+        </div>
+      </div>
+
+      <div class="note">Source of truth:
+      <code>shared-flows/sf-logging/sharedflowbundle/</code> — one policy
+      (<code>AM-LogContext</code>) wired by <code>sharedflows/default.xml</code>; the optional
+      sink and enablement steps live in
+      <code>shared-flows/sf-logging/optional-cloudlogging/</code>
+      (<code>ML-CloudLogging.xml</code> + <code>README.md</code>).</div>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>CI/CD &amp; IAM — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html" class="active">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <span class="eyebrow">Proxy &amp; operations</span>
+      <h1>CI/CD &amp; IAM</h1>
+
+      <div class="answer">
+        <p>The chassis ships two GitHub Actions workflows. <code>ci-validate.yml</code> is <strong>active today</strong>: it runs <code>tools/validate.sh</code> (xmllint well-formedness + cross-reference integrity) on every push and PR, needs no credentials, and is green on every commit. <code>deploy-apigee.yml</code> is <strong>inert by design</strong>: it deploys to Apigee X over keyless Workload Identity Federation, but an <code>if: vars.APIGEE_DEPLOY_ENABLED == 'true'</code> guard skips it until activated. It is gated because the signed-in account holds only <code>roles/apigee.admin</code> — enough to deploy by hand, but <em>not</em> enough to create the deploy service account or the WIF pool the pipeline needs. Activation is a one-time, self-service IAM elevation followed by <code>tools/setup-wif.sh</code>. No service-account JSON keys are ever created or stored.</p>
+      </div>
+
+      <p class="lead">CI/CD here is split along a single fault line: validation is free and unconditional, deployment requires Google Cloud identity. The first half runs from day one; the second half stays dormant behind a feature flag until the operator grants themselves the IAM they don't yet have.</p>
+
+      <h2>The two workflows</h2>
+      <p>Both live under <code>.github/workflows/</code>. They are mutually exclusive in concern — one validates artifacts, one ships them — and together they cover the full path from commit to a deployed Apigee environment.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Workflow</th><th>Trigger</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>ci-validate.yml</td>
+            <td>every <code>push</code>, every <code>pull_request</code>, plus <code>workflow_dispatch</code></td>
+            <td><span class="chip ok">active now</span> Runs <code>tools/validate.sh</code> — the same well-formedness + cross-reference checks Apigee enforces on import. No GCP credentials required.</td>
+          </tr>
+          <tr>
+            <td>deploy-apigee.yml</td>
+            <td><code>workflow_dispatch</code> + push of a <code>v*</code> tag</td>
+            <td><span class="chip warnst">inert</span> Deploys shared flows then the proxy via <code>tools/deploy.sh</code> over WIF. Skipped until <code>APIGEE_DEPLOY_ENABLED == 'true'</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>ci-validate.yml — active today</h2>
+      <p>A single <code>validate</code> job on <code>ubuntu-latest</code>: check out, install <code>libxml2-utils</code> (for <code>xmllint</code>), then run <code>tools/validate.sh</code>. There is no Google Cloud step, no secret, and nothing to gate — which is exactly why it runs on every push without ceremony.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">.github/workflows/ci-validate.yml</span><span class="code-lang">YAML</span></div>
+<pre><code><span class="tok-key">on</span>:
+  <span class="tok-key">push</span>:
+  <span class="tok-key">pull_request</span>:
+  <span class="tok-key">workflow_dispatch</span>:
+
+<span class="tok-key">jobs</span>:
+  <span class="tok-key">validate</span>:
+    <span class="tok-key">runs-on</span>: ubuntu-latest
+    <span class="tok-key">steps</span>:
+      - <span class="tok-key">uses</span>: actions/checkout@v4
+      - <span class="tok-key">name</span>: Install xmllint
+        <span class="tok-key">run</span>: sudo apt-get update &amp;&amp; sudo apt-get install -y libxml2-utils
+      - <span class="tok-key">name</span>: Validate Apigee bundles (xmllint + cross-references)
+        <span class="tok-key">run</span>: bash tools/validate.sh</code></pre>
+      </div>
+
+      <p><code>tools/validate.sh</code> exits non-zero on the first defect, so a broken bundle turns the commit red. It enforces three invariants across every shared flow and the reference proxy:</p>
+      <ul>
+        <li><strong>XML well-formedness</strong> — <code>xmllint --noout</code> on every <code>*.xml</code> under <code>shared-flows/</code> and <code>apiproxies/</code>.</li>
+        <li><strong>Step &#8596; policy file &#8596; manifest integrity</strong> — every <code>&lt;Name&gt;</code> referenced in a flow has a matching <code>policies/&lt;name&gt;.xml</code> <em>and</em> a <code>&lt;Policy&gt;</code> entry in the bundle manifest, and vice-versa.</li>
+        <li><strong>Filename equals root <code>name</code> attribute</strong> — each policy file's root element <code>name="…"</code> matches its filename, the constraint Apigee imposes on import.</li>
+      </ul>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v5M12 8h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Validation mirrors Apigee's import checks</span>
+          <p>The point of <code>ci-validate.yml</code> is to fail fast and free. It reproduces the structural checks Apigee runs at import time, so a malformed bundle is caught at PR review — long before anyone spends a deploy (and trial-clock minutes) discovering it the hard way.</p>
+        </div>
+      </div>
+
+      <h2>deploy-apigee.yml — keyless deploy via WIF</h2>
+      <p>The deploy workflow is deliberately conservative for a shared eval org on a trial clock: it never fires on a plain push to <code>main</code>. It runs only on manual <code>workflow_dispatch</code> (with an <code>environment</code> input defaulting to <code>eval</code>) or when a <code>v*</code> tag is pushed.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">.github/workflows/deploy-apigee.yml — trigger, permissions, guard</span><span class="code-lang">YAML</span></div>
+<pre><code><span class="tok-key">on</span>:
+  <span class="tok-key">workflow_dispatch</span>:
+    <span class="tok-key">inputs</span>:
+      <span class="tok-key">environment</span>:
+        <span class="tok-key">default</span>: eval
+        <span class="tok-key">required</span>: <span class="tok-str">true</span>
+  <span class="tok-key">push</span>:
+    <span class="tok-key">tags</span>:
+      - <span class="tok-str">'v*'</span>
+
+<span class="tok-key">permissions</span>:
+  <span class="tok-key">contents</span>: read
+  <span class="tok-key">id-token</span>: write   <span class="tok-cmt"># required for Workload Identity Federation (keyless auth)</span>
+
+<span class="tok-key">jobs</span>:
+  <span class="tok-key">deploy</span>:
+    <span class="tok-key">runs-on</span>: ubuntu-latest
+    <span class="tok-key">if</span>: ${{ vars.APIGEE_DEPLOY_ENABLED == <span class="tok-str">'true'</span> }}</code></pre>
+      </div>
+
+      <p>The <code>id-token: write</code> permission is the load-bearing line: it lets the job mint a short-lived GitHub OIDC token, which is the entire basis of the keyless model below. The <code>if:</code> guard is what keeps the job dormant — with the repo variable unset, every run resolves to "skipped" rather than "failed".</p>
+
+      <h3>How the keyless model works</h3>
+      <p>No JSON key files exist anywhere — not in the repo, not in GitHub Secrets. Instead the job presents its GitHub-issued OIDC token to Google's Security Token Service, which (because the WIF provider trusts this specific repo) exchanges it for a short-lived access token scoped to the <code>apigee-deployer</code> service account.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>GitHub mints an OIDC token</h4>
+          <p>With <code>id-token: write</code> set, the runner obtains a signed JWT from <code>token.actions.githubusercontent.com</code> asserting the workflow's identity — including its <code>repository</code> claim.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>WIF exchanges it for Google credentials</h4>
+          <p><code>google-github-actions/auth@v2</code> sends that token to STS against <code>vars.WIF_PROVIDER</code>. The provider's attribute condition <code>assertion.repository=='…/apigee-bank-chassis'</code> must hold, or the exchange is refused.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>It impersonates the deploy SA</h4>
+          <p>The exchanged identity is bound to <code>apigee-deployer</code> via <code>roles/iam.workloadIdentityUser</code>, yielding a short-lived token printed by <code>gcloud auth print-access-token</code>. No long-lived key is ever materialised.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>apigeecli deploys flows then proxy</h4>
+          <p>The job installs <code>apigeecli</code>, exports that token as <code>APIGEE_TOKEN</code>, and runs <code>tools/deploy.sh</code> — which deploys all ten shared flows first (the proxy's FlowCallouts require them to pre-exist), then <code>bank-accounts-v1</code>.</p>
+        </div>
+      </div>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">.github/workflows/deploy-apigee.yml — steps</span><span class="code-lang">YAML</span></div>
+<pre><code>      - <span class="tok-key">name</span>: Authenticate to Google Cloud (Workload Identity Federation)
+        <span class="tok-key">uses</span>: google-github-actions/auth@v2
+        <span class="tok-key">with</span>:
+          <span class="tok-key">workload_identity_provider</span>: ${{ vars.WIF_PROVIDER }}
+          <span class="tok-key">service_account</span>: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - <span class="tok-key">name</span>: Set up gcloud
+        <span class="tok-key">uses</span>: google-github-actions/setup-gcloud@v2
+
+      - <span class="tok-key">name</span>: Install apigeecli
+        <span class="tok-key">run</span>: curl -s https://raw.githubusercontent.com/apigee/apigeecli/main/downloadLatest.sh | bash
+
+      - <span class="tok-key">name</span>: Deploy shared flows then proxy
+        <span class="tok-key">run</span>: |
+          export PATH=<span class="tok-str">"$PATH:$HOME/.apigeecli/bin"</span>
+          export APIGEE_TOKEN=<span class="tok-str">"$(gcloud auth print-access-token)"</span>
+          ./tools/deploy.sh</code></pre>
+      </div>
+
+      <h2>Why the deploy job is gated</h2>
+      <p>This is the central design fact of the page, so state it plainly: the account that owns this project holds <strong>only <code>roles/apigee.admin</code></strong> on <code>your-apigee-project</code>. That role is sufficient to push bundles with your own token — which is exactly how Phase 4 deployed to <code>eval</code> by hand — but it cannot:</p>
+      <ul>
+        <li>create the <code>apigee-deployer</code> service account (needs <code>roles/iam.serviceAccountAdmin</code>),</li>
+        <li>create the Workload Identity Pool and OIDC provider (needs <code>roles/iam.workloadIdentityPoolAdmin</code>),</li>
+        <li>grant project-level IAM bindings to that SA (needs <code>roles/resourcemanager.projectIamAdmin</code>),</li>
+        <li>enable the STS / IAM Credentials APIs (needs <code>roles/serviceusage.serviceUsageAdmin</code>).</li>
+      </ul>
+      <p>Because the prerequisites cannot be created from the current permission set, the pipeline cannot authenticate. Rather than ship a workflow that fails on every run, the chassis ships it <em>skipped</em> behind <code>APIGEE_DEPLOY_ENABLED</code> and documents the one-time elevation that flips it on.</p>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3.5 21 19H3L12 3.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Elevation is a deliberate, human-in-the-loop act</span>
+          <p>The pipeline does not — and structurally cannot — escalate its own privileges. A person must grant the IAM in the Cloud Console first. This keeps the privileged step auditable and out of automation, which matters for a project whose whole point is a defensible security posture.</p>
+        </div>
+      </div>
+
+      <h2>Activating the pipeline — one time</h2>
+      <p>Four steps, performed once. The first is the manual IAM grant; the rest are scripted or are simple variable registration.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>Elevate your IAM (Cloud Console)</h4>
+          <p>Grant your account <code>roles/owner</code> on <code>your-apigee-project</code>, or the minimal bundle: <code>iam.serviceAccountAdmin</code>, <code>iam.workloadIdentityPoolAdmin</code>, <code>resourcemanager.projectIamAdmin</code>, <code>serviceusage.serviceUsageAdmin</code>.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Run tools/setup-wif.sh</h4>
+          <p>Creates the deploy SA, the WIF pool + GitHub OIDC provider bound to this repo, and the impersonation binding. It then prints the exact <code>gh variable set</code> commands to run.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Set the four repo variables</h4>
+          <p>Register <code>WIF_PROVIDER</code>, <code>WIF_SERVICE_ACCOUNT</code>, <code>APIGEE_ORG</code>, and <code>APIGEE_DEPLOY_ENABLED=true</code> — the last of which un-skips the deploy job.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>Deploy</h4>
+          <p>Run <code>gh workflow run "Deploy to Apigee X"</code> or push a <code>v*</code> tag.</p>
+        </div>
+      </div>
+
+      <h3>What tools/setup-wif.sh actually does</h3>
+      <p>The script is <code>set -euo pipefail</code> and idempotent (creation calls tolerate "already exists"). Against <code>your-apigee-project</code> (project number <code>PROJECT_NUMBER</code>) it performs four blocks of work.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Action</th><th>Resource</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Enable APIs</td>
+            <td><code>iamcredentials</code>, <code>sts</code>, <code>apigee</code></td>
+            <td>Turn on the services the token exchange and deploy depend on.</td>
+          </tr>
+          <tr>
+            <td>Create SA + grant roles</td>
+            <td><code>apigee-deployer</code></td>
+            <td>Grants <code>roles/apigee.apiAdminV2</code> and <code>roles/apigee.environmentAdmin</code> — the deploy-scoped permissions, narrower than the human's <code>apigee.admin</code>.</td>
+          </tr>
+          <tr>
+            <td>Create WIF pool + provider</td>
+            <td><code>github-pool</code> / <code>github-provider</code></td>
+            <td>OIDC provider trusting <code>token.actions.githubusercontent.com</code>, with attribute condition <code>assertion.repository=='…/apigee-bank-chassis'</code> so only this repo can exchange.</td>
+          </tr>
+          <tr>
+            <td>Bind repo identity to SA</td>
+            <td><code>roles/iam.workloadIdentityUser</code></td>
+            <td>Lets the repo's <code>principalSet://…/attribute.repository/…</code> impersonate <code>apigee-deployer</code> — the link that makes keyless auth resolve.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">tools/setup-wif.sh — WIF pool + repo-scoped OIDC provider</span><span class="code-lang">bash</span></div>
+<pre><code>gcloud iam workload-identity-pools providers create-oidc <span class="tok-str">"$PROVIDER"</span> \
+  --location global --workload-identity-pool <span class="tok-str">"$POOL"</span> \
+  --display-name <span class="tok-str">"GitHub provider"</span> \
+  --attribute-mapping <span class="tok-str">"google.subject=assertion.sub,attribute.repository=assertion.repository"</span> \
+  --attribute-condition <span class="tok-str">"assertion.repository=='$REPO'"</span> \
+  --issuer-uri <span class="tok-str">"https://token.actions.githubusercontent.com"</span> || true</code></pre>
+      </div>
+
+      <p>On success the script prints the variable-registration commands verbatim:</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">tools/setup-wif.sh — printed output</span><span class="code-lang">shell</span></div>
+<pre class="shell">$ gh variable set WIF_PROVIDER          -b "$WIF_PROVIDER"   -R "$REPO"
+$ gh variable set WIF_SERVICE_ACCOUNT   -b "$SA_EMAIL"       -R "$REPO"
+$ gh variable set APIGEE_ORG            -b "$PROJECT"        -R "$REPO"
+$ gh variable set APIGEE_DEPLOY_ENABLED -b "true"            -R "$REPO"
+
+$ gh workflow run "Deploy to Apigee X" -R "$REPO"</pre>
+      </div>
+
+      <h2>Configuration knobs</h2>
+      <p>The values an operator changes to point the pipeline at a different project, repo, or environment. The repo variables are read by <code>deploy-apigee.yml</code>; the script constants are edited in <code>tools/setup-wif.sh</code> before the one-time run.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Knob</th><th>Where</th><th>Default / value</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>APIGEE_DEPLOY_ENABLED</td><td>GitHub repo variable</td><td>unset &#8594; set to <code>true</code> to un-skip the deploy job</td></tr>
+          <tr><td>WIF_PROVIDER</td><td>GitHub repo variable</td><td><code>projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool/providers/github-provider</code></td></tr>
+          <tr><td>WIF_SERVICE_ACCOUNT</td><td>GitHub repo variable</td><td><code>apigee-deployer@your-apigee-project.iam.gserviceaccount.com</code></td></tr>
+          <tr><td>APIGEE_ORG</td><td>GitHub repo variable</td><td><code>your-apigee-project</code></td></tr>
+          <tr><td>environment</td><td>workflow_dispatch input</td><td><code>eval</code> (the single configured environment)</td></tr>
+          <tr><td>PROJECT / PROJECT_NUMBER / REPO</td><td><code>tools/setup-wif.sh</code> constants</td><td><code>your-apigee-project</code> · <code>PROJECT_NUMBER</code> · <code>your-org/apigee-bank-chassis</code></td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout danger">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4.5M12 16h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">No keys — ever</span>
+          <p>Authentication is short-lived OIDC end to end. No service-account JSON key is created, downloaded, or stored in GitHub Secrets. If you find yourself generating a key file to make this work, you have left the intended design — re-check the WIF binding instead.</p>
+        </div>
+      </div>
+
+      <div class="pillrow">
+        <span class="chip ok">ci-validate: green every commit</span>
+        <span class="chip warnst">deploy: skipped until enabled</span>
+        <span class="chip teal">keyless OIDC</span>
+        <span class="chip gold">one-time IAM elevation</span>
+      </div>
+
+      <hr>
+      <p class="muted note">Source of truth: <code>.github/workflows/ci-validate.yml</code>, <code>.github/workflows/deploy-apigee.yml</code>, <code>.github/workflows/README.md</code>, <code>tools/setup-wif.sh</code>, <code>tools/deploy.sh</code>, <code>tools/validate.sh</code>, and <code>BLUEPRINT.md</code> (Phase 5 + locked decisions).</p>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>

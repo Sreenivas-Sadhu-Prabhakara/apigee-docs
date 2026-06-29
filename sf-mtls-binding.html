@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e1a">
+  <meta name="description" content="Engineering documentation for an Apigee X reference implementation of FAPI 1.0 Advanced for UK Open Banking.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+  <title>sf-mtls-binding — Apigee Docs</title>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+<a class="brand" href="index.html" aria-label="Apigee Docs — home">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.25" y="2.25" width="33.5" height="33.5" rx="4" stroke="currentColor" stroke-width="1.5" opacity="0.55"/>
+      <path d="M9 13.5h20M9 24.5h20" stroke="currentColor" stroke-width="1" opacity="0.28"/>
+      <path d="M19 6.5v25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="19" cy="19" r="4" fill="#0b0e1a" stroke="#46c2b0" stroke-width="2"/>
+    </svg>
+  </span>
+  <span class="brand-text">
+    <span class="brand-name">Apigee Docs</span>
+    <span class="brand-tagline">Apigee X · FAPI 1.0 Advanced</span>
+  </span>
+</a>
+<nav class="nav" aria-label="Documentation">
+  <div class="nav-group">
+    <div class="nav-group-label">Start</div>
+    <a href="index.html">Overview</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="security-model.html">FAPI Security Model</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Shared flows</div>
+    <a href="sf-preflight.html">sf-preflight</a>
+    <a href="sf-fapi-headers.html">sf-fapi-headers</a>
+    <a href="sf-jwt-validation.html">sf-jwt-validation</a>
+    <a href="sf-jws-validation.html">sf-jws-validation</a>
+    <a href="sf-jwe.html">sf-jwe</a>
+    <a href="sf-mtls-binding.html" class="active">sf-mtls-binding</a>
+    <a href="sf-security-headers.html">sf-security-headers</a>
+    <a href="sf-traffic-management.html">sf-traffic-management</a>
+    <a href="sf-error-handling.html">sf-error-handling</a>
+    <a href="sf-logging.html">sf-logging</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Proxy &amp; operations</div>
+    <a href="reference-proxy.html">Reference proxy</a>
+    <a href="deployment.html">Deployment &amp; testing</a>
+    <a href="cicd-iam.html">CI/CD &amp; IAM</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Project</div>
+    <a href="decisions.html">Build decisions</a>
+  </div>
+</nav>
+    </aside>
+    <main class="content">
+      <p class="eyebrow">Shared flow · RFC 8705 / FAPI</p>
+      <h1>sf-mtls-binding</h1>
+
+      <div class="answer">
+        <p><code>sf-mtls-binding</code> enforces <strong>sender-constrained (certificate-bound) access tokens</strong> per RFC 8705. A bound token carries a <code>cnf</code> (confirmation) claim of the form <code>{"x5t#S256":"&lt;base64url&gt;"}</code>. This flow recomputes that thumbprint from the client's mTLS certificate — <code>base64url(SHA-256(DER-encoded leaf cert))</code> using jsrsasign — and compares it to the claim. Two policies run: <strong>JS-VerifyCertBinding</strong> does the compute-and-compare and writes <code>cert.binding.match</code>; <strong>RF-CertBindingMismatch</strong> raises <span class="chip errst">401</span> whenever the match is not positively <code>true</code>. The JavaScript <em>fails closed</em>: any missing input, malformed cert, or exception leaves <code>match = false</code> and the request is rejected.</p>
+      </div>
+
+      <p class="lead">This is the proof-of-possession gate. <code>sf-jwt-validation</code> proves the token is genuine; <code>sf-mtls-binding</code> proves the caller holds the private key the token was issued to. Together they defeat token replay/export: a stolen bearer token is worthless without the matching client certificate and its private key.</p>
+
+      <h2>Policies in this bundle</h2>
+      <p>Two policies, declared in <code>sf-mtls-binding.xml</code> and sequenced by <code>sharedflows/default.xml</code>. Both depend on the bundled jsrsasign library shipped as a JavaScript resource.</p>
+
+      <table class="policy">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>JS-VerifyCertBinding</td>
+            <td>Javascript</td>
+            <td>Runs <code>certBinding.js</code> (with <code>jsrsasign-all-min.js</code> included). Locates the client cert, reads the <code>cnf.x5t#S256</code> expected thumbprint, computes <code>base64url(SHA-256(DER))</code>, and publishes the comparison result into <code>cert.binding.*</code> variables. <code>timeLimit="2000"</code>, <code>continueOnError="false"</code>.</td>
+          </tr>
+          <tr>
+            <td>RF-CertBindingMismatch</td>
+            <td>RaiseFault</td>
+            <td>Return <span class="chip errst">401</span> <code>UK.OBIE.Unauthorized</code> when <code>cert.binding.match = false</code>. Emits an OBIE-shaped JSON body and echoes <code>x-fapi-interaction-id</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="pillrow">
+        <span class="chip plain">jsc://certBinding.js</span>
+        <span class="chip plain">jsc://jsrsasign-all-min.js</span>
+      </div>
+
+      <h2>Step order &amp; conditions</h2>
+      <p>This is exactly what <code>sharedflows/default.xml</code> executes. Both steps are conditional — neither runs unconditionally.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>JS-VerifyCertBinding — condition</h4>
+          <p>Runs only when <code>(jwt.VJWT-AccessToken.claim.cnf != null) or (request.header.x-client-cert != null)</code>. In words: run the check if the verified access token carries a <code>cnf</code> claim, <em>or</em> if a client certificate header is present. If neither is true — an unbound token on a plain connection — the whole flow is a no-op and nothing is rejected.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>RF-CertBindingMismatch — condition</h4>
+          <p>Runs only when <code>(cert.binding.match = false)</code>. Because the JavaScript initialises <code>cert.binding.match</code> to <code>false</code> and only sets it <code>true</code> on a proven match, <em>every</em> failure path — no cert, no <code>cnf</code>, malformed DER, thumbprint mismatch, or thrown exception — lands here as a 401.</p>
+        </div>
+      </div>
+
+      <div class="callout warn">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 4.5 21 19.5H3L12 4.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M12 10v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="16.75" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Order matters: this flow runs after sf-jwt-validation</span>
+          <p>The step condition reads <code>jwt.VJWT-AccessToken.claim.cnf</code> — a variable only populated once the <code>VJWT-AccessToken</code> VerifyJWT policy (in <code>sf-jwt-validation</code>) has run. So although mTLS is <em>terminated</em> at the network edge, the <em>binding verification</em> shared flow must be invoked <strong>after</strong> token validation, otherwise the <code>cnf</code> branch of the condition can never be true. The fallback <code>x-client-cert != null</code> branch means a cert presented without a bound token still triggers the check — and fails closed with "Access token has no cnf claim", returning 401.</p>
+        </div>
+      </div>
+
+      <h2>Inside JS-VerifyCertBinding</h2>
+      <p><code>certBinding.js</code> is a single IIFE that fails closed. Its first act is to set the defaults so any early return or thrown error leaves the request rejectable.</p>
+
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/certBinding.js — fail-closed defaults</span><span class="code-lang">JS</span></div>
+<pre><code><span class="tok-cmt">// Default to false: fail closed unless we positively prove a match.</span>
+context.setVariable(<span class="tok-str">'cert.binding.match'</span>, <span class="tok-key">false</span>);
+context.setVariable(<span class="tok-str">'cert.binding.computed'</span>, <span class="tok-str">''</span>);
+context.setVariable(<span class="tok-str">'cert.binding.expected'</span>, <span class="tok-str">''</span>);</code></pre>
+      </div>
+
+      <p>It then proceeds through four stages. Any failure in a stage records a human-readable reason in <code>cert.binding.error</code> and returns early — leaving <code>match = false</code>.</p>
+
+      <div class="lifecycle">
+        <div class="lifecycle-step">
+          <h4>1 · Locate the client certificate</h4>
+          <p>Tries three sources in priority order, most specific first: <code>request.header.x-forwarded-client-cert</code>, then the native <code>tls.client.raw.cert</code>, then <code>request.header.x-client-cert</code>. On Apigee X behind a Google Cloud external HTTPS load balancer the client cert is <em>not</em> a native TLS variable — the LB forwards it as a header — so the header sources come first, with the native variable kept for hybrid topologies. No cert at all → error <code>"No client certificate found in request."</code></p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>2 · Read the expected thumbprint</h4>
+          <p>Reads <code>jwt.VJWT-AccessToken.claim.cnf</code>. If absent → <code>"Access token has no cnf claim."</code> The value may already be an object or a JSON string; a string is <code>JSON.parse</code>d (parse failure → <code>"cnf claim is not valid JSON."</code>). It pulls <code>cnf['x5t#S256']</code> (missing → <code>"cnf claim does not contain x5t#S256."</code>), strips whitespace, and stores it in <code>cert.binding.expected</code>.</p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>3 · Normalise the certificate to DER (hex)</h4>
+          <p>The forwarded cert can arrive in several shapes, handled defensively (see below) and converted to DER hex via jsrsasign — <code>pemtohex()</code> for PEM, <code>b64utohex()</code> for bare base64. Failure to derive bytes → <code>"Unable to derive DER bytes from client certificate."</code></p>
+        </div>
+        <div class="lifecycle-step">
+          <h4>4 · Hash, compare, decide</h4>
+          <p>Computes <code>SHA-256</code> over the DER hex with <code>KJUR.crypto.Util.hashHex</code>, encodes it base64url (no padding) with <code>hextob64u</code>, stores it in <code>cert.binding.computed</code>, and sets <code>cert.binding.match = (computed === expected)</code>. On a non-match it records <code>"Thumbprint mismatch: computed != cnf x5t#S256."</code></p>
+        </div>
+      </div>
+
+      <h3>Certificate-shape normalisation</h3>
+      <p>Stage 3 copes with four real-world encodings of the forwarded leaf certificate before it ever reaches jsrsasign:</p>
+      <ul>
+        <li><strong>(a) XFCC / Envoy style.</strong> Headers like <code>Cert="&lt;url-encoded PEM&gt;";Chain="…";…</code> — the leaf is extracted with the regex <code>/Cert="?([^";]+)"?/i</code>.</li>
+        <li><strong>(b) URL-encoded PEM.</strong> If the string contains <code>%</code> it is <code>decodeURIComponent</code>d (after turning <code>+</code> back into spaces) to restore <code>%0A</code> newlines and <code>%20</code> spaces.</li>
+        <li><strong>(c) PEM with literal newlines.</strong> If it contains <code>-----BEGIN</code> it is converted directly with <code>pemtohex(certStr, 'CERTIFICATE')</code>.</li>
+        <li><strong>(d) Bare base64 of the DER.</strong> No PEM armor: whitespace is stripped and base64url is normalised to base64 (<code>-</code>→<code>+</code>, <code>_</code>→<code>/</code>) before <code>b64utohex()</code>.</li>
+      </ul>
+
+      <h2>The crypto, as written</h2>
+      <p>The load-bearing comparison is four lines. The thumbprint definition is RFC 8705 verbatim: <code>x5t#S256 == base64url( SHA-256( DER-encoded client certificate ) )</code>.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/certBinding.js — compute &amp; compare</span><span class="code-lang">JS</span></div>
+<pre><code><span class="tok-key">var</span> digestHex = KJUR.crypto.Util.hashHex(certHex, <span class="tok-str">'sha256'</span>);
+<span class="tok-key">var</span> computed  = hextob64u(digestHex); <span class="tok-cmt">// base64url, no padding</span>
+context.setVariable(<span class="tok-str">'cert.binding.computed'</span>, computed);
+
+<span class="tok-key">var</span> match = (computed === expected);
+context.setVariable(<span class="tok-str">'cert.binding.match'</span>, match);
+<span class="tok-key">if</span> (!match) {
+  context.setVariable(<span class="tok-str">'cert.binding.error'</span>,
+    <span class="tok-str">'Thumbprint mismatch: computed != cnf x5t#S256.'</span>);
+}</code></pre>
+      </div>
+
+      <p>The whole IIFE is wrapped in <code>try/catch</code> so even an unexpected jsrsasign error fails closed:</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">resources/jsc/certBinding.js — catch-all</span><span class="code-lang">JS</span></div>
+<pre><code><span class="tok-key">catch</span> (e) {
+  <span class="tok-cmt">// Fail closed on any unexpected error.</span>
+  context.setVariable(<span class="tok-str">'cert.binding.match'</span>, <span class="tok-key">false</span>);
+  context.setVariable(<span class="tok-str">'cert.binding.error'</span>,
+    <span class="tok-str">'certBinding.js exception: '</span> + (e &amp;&amp; e.message ? e.message : e));
+}</code></pre>
+      </div>
+
+      <h3>Output context variables</h3>
+      <div class="pillrow">
+        <span class="layer-chip">cert.binding.match</span>
+        <span class="layer-chip">cert.binding.computed</span>
+        <span class="layer-chip">cert.binding.expected</span>
+        <span class="layer-chip">cert.binding.error</span>
+      </div>
+      <p class="muted"><code>match</code> is the only variable the flow acts on (<code>"true"</code> / <code>"false"</code>). <code>computed</code>, <code>expected</code> and <code>error</code> exist for diagnostics and logging — useful when <code>sf-logging</code> records why a binding check failed.</p>
+
+      <h3>sharedflows/default.xml</h3>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">sharedflows/default.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;SharedFlow</span> <span class="tok-key">name</span>=<span class="tok-str">"default"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;Step&gt;</span>
+    <span class="tok-tag">&lt;Name&gt;</span>JS-VerifyCertBinding<span class="tok-tag">&lt;/Name&gt;</span>
+    <span class="tok-tag">&lt;Condition&gt;</span>(jwt.VJWT-AccessToken.claim.cnf != null) or (request.header.x-client-cert != null)<span class="tok-tag">&lt;/Condition&gt;</span>
+  <span class="tok-tag">&lt;/Step&gt;</span>
+  <span class="tok-tag">&lt;Step&gt;</span>
+    <span class="tok-tag">&lt;Name&gt;</span>RF-CertBindingMismatch<span class="tok-tag">&lt;/Name&gt;</span>
+    <span class="tok-tag">&lt;Condition&gt;</span>(cert.binding.match = false)<span class="tok-tag">&lt;/Condition&gt;</span>
+  <span class="tok-tag">&lt;/Step&gt;</span>
+<span class="tok-tag">&lt;/SharedFlow&gt;</span></code></pre>
+      </div>
+
+      <h3>RF-CertBindingMismatch — the rejection</h3>
+      <p>An OBIE-shaped 401. The interaction id is read from <code>messaging.fapi.interaction.id</code> (set upstream by <code>sf-fapi-headers</code>), not from the raw request header. <code>IgnoreUnresolvedVariables</code> is <code>true</code> so a missing interaction id never turns the fault itself into an error.</p>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/RF-CertBindingMismatch.xml — FaultResponse</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;Header</span> <span class="tok-key">name</span>=<span class="tok-str">"Content-Type"</span><span class="tok-tag">&gt;</span>application/json<span class="tok-tag">&lt;/Header&gt;</span>
+<span class="tok-tag">&lt;Header</span> <span class="tok-key">name</span>=<span class="tok-str">"x-fapi-interaction-id"</span><span class="tok-tag">&gt;</span>{messaging.fapi.interaction.id}<span class="tok-tag">&lt;/Header&gt;</span>
+<span class="tok-tag">&lt;Payload</span> <span class="tok-key">contentType</span>=<span class="tok-str">"application/json"</span><span class="tok-tag">&gt;</span>{
+  "Code": "401",
+  "Id": "{messaging.fapi.interaction.id}",
+  "Message": "Unauthorized: access token is not bound to the presented client certificate.",
+  "Errors": [
+    {
+      "ErrorCode": "UK.OBIE.Unauthorized",
+      "Message": "The cnf x5t#S256 thumbprint in the access token does not match the SHA-256 thumbprint of the client mTLS certificate."
+    }
+  ]
+}<span class="tok-tag">&lt;/Payload&gt;</span>
+<span class="tok-tag">&lt;StatusCode&gt;</span>401<span class="tok-tag">&lt;/StatusCode&gt;</span>
+<span class="tok-tag">&lt;ReasonPhrase&gt;</span>Unauthorized<span class="tok-tag">&lt;/ReasonPhrase&gt;</span></code></pre>
+      </div>
+
+      <h3>JS-VerifyCertBinding.xml</h3>
+      <div class="codeblock">
+        <div class="code-bar"><span class="code-title">policies/JS-VerifyCertBinding.xml</span><span class="code-lang">XML</span></div>
+<pre><code><span class="tok-tag">&lt;Javascript</span> <span class="tok-key">name</span>=<span class="tok-str">"JS-VerifyCertBinding"</span> <span class="tok-key">timeLimit</span>=<span class="tok-str">"2000"</span> <span class="tok-key">continueOnError</span>=<span class="tok-str">"false"</span><span class="tok-tag">&gt;</span>
+  <span class="tok-tag">&lt;ResourceURL&gt;</span>jsc://certBinding.js<span class="tok-tag">&lt;/ResourceURL&gt;</span>
+  <span class="tok-tag">&lt;IncludeURL&gt;</span>jsc://jsrsasign-all-min.js<span class="tok-tag">&lt;/IncludeURL&gt;</span>
+<span class="tok-tag">&lt;/Javascript&gt;</span></code></pre>
+      </div>
+
+      <h2>FAPI relevance</h2>
+      <p>Certificate-bound access tokens are a core FAPI 1.0 Advanced requirement. They turn a bearer token into a <em>holder-of-key</em> token: possession alone is insufficient — the presenter must also complete the mTLS handshake with the key the token was issued against.</p>
+      <div class="pillrow">
+        <span class="layer-chip">RFC 8705 PoP</span>
+        <span class="layer-chip">cnf / x5t#S256</span>
+        <span class="layer-chip">SHA-256 leaf thumbprint</span>
+        <span class="layer-chip">Fail-closed</span>
+        <span class="layer-chip">OBIE error contract</span>
+      </div>
+      <ul>
+        <li><strong>Sender-constrained tokens.</strong> A token exfiltrated from logs, a proxy, or a compromised client cannot be replayed against this API without the matching client certificate and its private key.</li>
+        <li><strong>Leaf, not chain.</strong> The thumbprint is over the <em>leaf</em> certificate's DER, matching how the authorization server computed <code>x5t#S256</code> at token issuance — the XFCC <code>Cert=</code> extraction deliberately isolates the leaf from any forwarded chain.</li>
+        <li><strong>Defence in depth.</strong> Pairs with <code>sf-jwt-validation</code> (token authenticity) so authenticity and possession are checked by separate, composable flows.</li>
+        <li><strong>Traceability.</strong> The 401 echoes <code>x-fapi-interaction-id</code>, keeping rejected calls correlatable end to end.</li>
+      </ul>
+
+      <div class="callout info">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M12 11v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="7.75" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Why jsrsasign instead of native variables</span>
+          <p>Apigee X does not expose a built-in cert-thumbprint variable that survives an external HTTPS load balancer, which strips the TLS layer and re-presents the client cert as a forwarded header. Computing <code>SHA-256(DER)</code> in JavaScript with jsrsasign is portable across that topology and across hybrid — the same code works whether the cert arrives as XFCC, URL-encoded PEM, raw PEM, or bare base64.</p>
+        </div>
+      </div>
+
+      <h2>Configuration knobs</h2>
+      <p>The placeholder and environment-specific values to review before production. Most are header/variable names that must match your deployment topology and your <code>sf-jwt-validation</code> policy names.</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4>Client-cert source headers</h4>
+          <p>The fallback chain in <code>certBinding.js</code> — <code>x-forwarded-client-cert</code>, <code>tls.client.raw.cert</code>, <code>x-client-cert</code>. Set these to the exact header your load balancer forwards the client certificate in; an LB that uses a different header name will look like "No client certificate found".</p>
+        </div>
+        <div class="card">
+          <h4>cnf claim variable</h4>
+          <p><code>jwt.VJWT-AccessToken.claim.cnf</code> is hard-wired to the VerifyJWT policy named <code>VJWT-AccessToken</code> in <code>sf-jwt-validation</code>. If you rename that policy, update both the JS read and the step <code>&lt;Condition&gt;</code> in <code>default.xml</code>.</p>
+        </div>
+        <div class="card">
+          <h4>Interaction-id variable</h4>
+          <p>The fault reads <code>messaging.fapi.interaction.id</code>. This must match where <code>sf-fapi-headers</code> stores the FAPI interaction id; otherwise the 401 ships an empty <code>x-fapi-interaction-id</code>.</p>
+        </div>
+        <div class="card">
+          <h4>JS time limit</h4>
+          <p><code>timeLimit="2000"</code> (ms) on JS-VerifyCertBinding. The base64 decode + SHA-256 is fast, but large forwarded chains plus jsrsasign init can take time; tune if you see JavaScript timeout faults under load.</p>
+        </div>
+        <div class="card">
+          <h4>Error contract</h4>
+          <p>The <code>UK.OBIE.Unauthorized</code> code and the two messages in RF-CertBindingMismatch. Keep them aligned with your tenant's published OBIE error catalogue.</p>
+        </div>
+        <div class="card">
+          <h4>jsrsasign resource</h4>
+          <p><code>jsc://jsrsasign-all-min.js</code> is the vendored crypto library providing <code>KJUR</code>, <code>pemtohex</code>, <code>b64utohex</code> and <code>hextob64u</code>. Pin and review its version as part of dependency hygiene.</p>
+        </div>
+      </div>
+
+      <div class="callout danger">
+        <span class="callout-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M12 7.5v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="16" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="callout-body">
+          <span class="callout-title">Verify the LB actually forwards the leaf cert</span>
+          <p>The binding check is only as strong as the certificate the proxy receives. If the external HTTPS load balancer is not configured to require client mTLS and forward the leaf certificate, the header will be absent, the JS will report "No client certificate found", and every bound token will 401 — or, worse, if mTLS is optional and unauthenticated traffic skips the check entirely, possession is never proven. Enforce client mTLS at the LB and confirm the forwarded-cert header name before relying on this flow.</p>
+        </div>
+      </div>
+
+      <h2>Where this fits</h2>
+      <p>mTLS is terminated at the network edge, but the <em>binding verification</em> shared flow is invoked in the request path <strong>after</strong> <code>sf-jwt-validation</code> — it consumes the parsed <code>cnf</code> claim that VerifyJWT publishes. The cumulative order is:</p>
+      <div class="pillrow">
+        <span class="chip plain">sf-preflight</span>
+        <span class="chip plain">sf-fapi-headers</span>
+        <span class="chip plain">sf-jwt-validation</span>
+        <span class="chip gold">sf-mtls-binding</span>
+        <span class="chip plain">sf-jws-validation</span>
+        <span class="chip plain">sf-jwe</span>
+      </div>
+      <p class="note">By the time <code>sf-mtls-binding</code> completes, the request is known to carry a genuine, in-scope access token <em>and</em> to be presented by the holder of the key that token was bound to — the proof-of-possession precondition for everything downstream.</p>
+
+    </main>
+  </div>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Generated documentation for the Apigee X FAPI 1.0 Advanced chassis.</span>
+    <span class="footer-meta">FAPI 1.0 Advanced · UK Open Banking</span>
+  </div>
+</footer>
+</body>
+</html>
